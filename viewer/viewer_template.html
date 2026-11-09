@@ -371,10 +371,11 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
       <div class="field-row">
         <button id="ex-json" type="button" title="etho-clusters 1.0: per-animal state labels, bouts and PC scores, plus the model and settings">Clusters (.json)</button>
         <button id="ex-csv" type="button" title="One row per animal per frame: animal, frame, time, state">Labels (.csv)</button>
-        <button id="ex-nb" type="button" class="primary" title="A zip with a Jupyter notebook, the clusters file and the pose data">Analysis notebook (.zip)</button>
+        <button id="ex-pdf" type="button" class="primary" title="A PDF summary of the clustering: figures and a short description of each result">Summary report (.pdf)</button>
+        <button id="ex-nb" type="button" title="A zip with a Jupyter notebook, the clusters file and the pose data">Analysis notebook (.zip)</button>
       </div>
       <p id="ex-status" class="note" role="status"></p>
-      <p class="note">Clusters: the <b>etho-clusters</b> 1.0 format (one JSON file): every animal's state per frame (1-based), its bouts and PC scores, plus the model (transition matrix, each state's flow field A, b, noise and fixed point), the PCA (variance, loadings, feature names) and the feature settings. Notebook: unzip and run all cells (needs numpy, pandas, matplotlib); it reads the clusters file and the pose data shipped beside it and summarises the behaviour in each state.</p>
+      <p class="note">Clusters: the <b>etho-clusters</b> 1.0 format (one JSON file): every animal's state per frame (1-based), its bouts and PC scores, plus the model (transition matrix, each state's flow field A, b, noise and fixed point), the PCA (variance, loadings, feature names) and the feature settings. Report: a PDF with the ethogram, time budget, bouts, transitions, the PCA, the states in PC space, per-state movement and social measures, average poses and a plain-language summary of each state (built in the browser; the first export fetches the jsPDF library). Notebook: the same analysis as Python code; unzip and run all cells (needs numpy, pandas, matplotlib); it reads the clusters file and the pose data shipped beside it and summarises the behaviour in each state.</p>
     </div>
   </div>
 </section>
@@ -419,6 +420,7 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
 </div>
 
 <script>/*__POSE_FORMAT__*/</script>
+<script>/*__REPORT__*/</script>
 <script type="application/json" id="nb-cells">/*__NOTEBOOK__*/</script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
@@ -2908,6 +2910,22 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
       .forEach(([o, v, w]) => (w === 4 ? end.setUint32(o, v, true) : end.setUint16(o, v, true)));
     return new Blob([...parts, ...central, new Uint8Array(end.buffer)], { type: 'application/zip' });
   }
+  // jsPDF is only needed for the report, so it is fetched on the first PDF export.
+  const JSPDF_URL = 'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js';
+  let jsPDFLoading = null;
+  function loadJsPDF() {
+    if (window.jspdf && window.jspdf.jsPDF) return Promise.resolve(window.jspdf.jsPDF);
+    if (!jsPDFLoading) {
+      jsPDFLoading = new Promise((resolve, reject) => {
+        const s = document.createElement('script');
+        s.src = JSPDF_URL;
+        s.onload = () => (window.jspdf && window.jspdf.jsPDF ? resolve(window.jspdf.jsPDF) : reject(new Error('the PDF library did not initialise')));
+        s.onerror = () => reject(new Error('could not load the PDF library (jsPDF) from cdnjs; check the internet connection'));
+        document.head.appendChild(s);
+      }).catch((e) => { jsPDFLoading = null; throw e; });
+    }
+    return jsPDFLoading;
+  }
   async function runExport(kind) {
     const st = $('#ex-status');
     if (!S || !S.analysis || !S.analysis.km) { st.textContent = 'Run the clustering first.'; return; }
@@ -2915,6 +2933,13 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
     let name, data;
     try {
       if (kind === 'json') { name = `${base}_clusters.json`; data = JSON.stringify(clusterExport()); }
+      else if (kind === 'pdf') {
+        name = `${base}_report.pdf`;
+        st.textContent = 'Building the report…';
+        const jsPDF = await loadJsPDF();
+        await pause(20);   // let the status line paint before the synchronous build
+        data = EthoReport.build(dataset, clusterExport(), { jsPDF }).output('blob');
+      }
       else if (kind === 'csv') { name = `${base}_labels.csv`; data = labelsCSV(); }
       else {
         name = `${base}_analysis.zip`;
@@ -2937,6 +2962,7 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
   $('#ex-json').addEventListener('click', () => runExport('json'));
   $('#ex-csv').addEventListener('click', () => runExport('csv'));
   $('#ex-nb').addEventListener('click', () => runExport('nb'));
+  $('#ex-pdf').addEventListener('click', () => runExport('pdf'));
 
   // ---------- cluster prototypes ----------
   // Real behaviour per cluster, no reconstruction: the bouts nearest the cluster's centre in PC space

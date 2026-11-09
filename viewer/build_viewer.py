@@ -5,8 +5,8 @@ Usage:
     python viewer/build_viewer.py [output.html]
 
 Default output: viewer/pose_viewer.html. The page inlines the etho-pose importer
-(viewer/pose_format.js) and the analysis-notebook template (viewer/analysis_notebook.py, split into
-cells), and loads three.js from a CDN. No data is bundled: use the page's "Load data" button (or drop
+(viewer/pose_format.js), the PDF report builder (viewer/report_pdf.js) and the analysis-notebook template (viewer/analysis_notebook.py, split into
+cells), and loads three.js from a CDN (jsPDF too, on the first PDF export). No data is bundled: use the page's "Load data" button (or drop
 a file on it) to open an etho-pose file or a legacy pose-testset JSON such as mouse_3d.json. The
 formats are described in viewer/POSE_FORMAT.md and viewer/CLUSTER_FORMAT.md.
 """
@@ -46,12 +46,16 @@ def main():
     out = Path(sys.argv[1]) if len(sys.argv) > 1 else HERE / "pose_viewer.html"
     importer = (HERE / "pose_format.js").read_text()
     assert "</" not in importer  # safe to inline inside <script>
+    report = (HERE / "report_pdf.js").read_text()
+    assert "</" not in report
     cells = json.dumps(notebook_cells(HERE / "analysis_notebook.py"))
     assert "</" not in cells     # safe to inline inside <script type="application/json">
     template = (HERE / "viewer_template.html").read_text()
     assert template.count("/*__POSE_FORMAT__*/") == 1
     assert template.count("/*__NOTEBOOK__*/") == 1
-    out.write_text(template.replace("/*__POSE_FORMAT__*/", importer).replace("/*__NOTEBOOK__*/", cells))
+    assert template.count("/*__REPORT__*/") == 1
+    out.write_text(template.replace("/*__POSE_FORMAT__*/", importer).replace("/*__REPORT__*/", report)
+                   .replace("/*__NOTEBOOK__*/", cells))
     print(f"wrote {out} ({out.stat().st_size / 1024:.0f} KB)")
 
 

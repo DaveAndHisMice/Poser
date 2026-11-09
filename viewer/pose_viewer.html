@@ -371,10 +371,11 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
       <div class="field-row">
         <button id="ex-json" type="button" title="etho-clusters 1.0: per-animal state labels, bouts and PC scores, plus the model and settings">Clusters (.json)</button>
         <button id="ex-csv" type="button" title="One row per animal per frame: animal, frame, time, state">Labels (.csv)</button>
-        <button id="ex-nb" type="button" class="primary" title="A zip with a Jupyter notebook, the clusters file and the pose data">Analysis notebook (.zip)</button>
+        <button id="ex-pdf" type="button" class="primary" title="A PDF summary of the clustering: figures and a short description of each result">Summary report (.pdf)</button>
+        <button id="ex-nb" type="button" title="A zip with a Jupyter notebook, the clusters file and the pose data">Analysis notebook (.zip)</button>
       </div>
       <p id="ex-status" class="note" role="status"></p>
-      <p class="note">Clusters: the <b>etho-clusters</b> 1.0 format (one JSON file): every animal's state per frame (1-based), its bouts and PC scores, plus the model (transition matrix, each state's flow field A, b, noise and fixed point), the PCA (variance, loadings, feature names) and the feature settings. Notebook: unzip and run all cells (needs numpy, pandas, matplotlib); it reads the clusters file and the pose data shipped beside it and summarises the behaviour in each state.</p>
+      <p class="note">Clusters: the <b>etho-clusters</b> 1.0 format (one JSON file): every animal's state per frame (1-based), its bouts and PC scores, plus the model (transition matrix, each state's flow field A, b, noise and fixed point), the PCA (variance, loadings, feature names) and the feature settings. Report: a PDF with the ethogram, time budget, bouts, transitions, the PCA, the states in PC space, per-state movement and social measures, average poses and a plain-language summary of each state (built in the browser; the first export fetches the jsPDF library). Notebook: the same analysis as Python code; unzip and run all cells (needs numpy, pandas, matplotlib); it reads the clusters file and the pose data shipped beside it and summarises the behaviour in each state.</p>
     </div>
   </div>
 </section>
@@ -648,6 +649,935 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.PoseFormat = api;
 })(typeof window !== 'undefined' ? window : globalThis);
+</script>
+<script>// Behaviour summary report (PDF).
+//
+// EthoReport.build(pose, clusters, { jsPDF }) turns an etho-pose dataset and an etho-clusters export
+// into a jsPDF document: the same analysis as the Jupyter notebook template (analysis_notebook.py),
+// drawn as vector figures with a short text description of each result. It reads only the two
+// exported objects, so it can also run outside the viewer (e.g. Node with the jspdf package).
+// build_viewer.py inlines this file into the viewer page; the page loads jsPDF from a CDN on demand.
+//
+// EthoReport.analyze(pose, clusters) returns the numbers alone (per-frame measures, time budget,
+// bouts, transitions, PCA summary, per-state medians and z-scores, average poses).
+(function (root) {
+  'use strict';
+
+  // ---------- numeric helpers (NaN-skipping, numpy conventions) ----------
+  const finite = (a) => { const o = []; for (let i = 0; i < a.length; i++) if (Number.isFinite(a[i])) o.push(a[i]); return o; };
+  const sortedFinite = (a) => Float64Array.from(finite(a)).sort();
+  function pctSorted(s, q) {           // numpy.percentile, linear interpolation
+    if (!s.length) return NaN;
+    const p = ((s.length - 1) * q) / 100, lo = Math.floor(p), hi = Math.min(lo + 1, s.length - 1);
+    return s[lo] + (s[hi] - s[lo]) * (p - lo);
+  }
+  const percentile = (a, q) => pctSorted(sortedFinite(a), q);
+  const median = (a) => percentile(a, 50);
+  function meanOf(a) { let s = 0, n = 0; for (let i = 0; i < a.length; i++) if (Number.isFinite(a[i])) { s += a[i]; n++; } return n ? s / n : NaN; }
+  function stdOf(a) {                  // ddof = 1, like pandas
+    const m = meanOf(a); let s = 0, n = 0;
+    for (let i = 0; i < a.length; i++) if (Number.isFinite(a[i])) { s += (a[i] - m) ** 2; n++; }
+    return n > 1 ? Math.sqrt(s / (n - 1)) : NaN;
+  }
+  function gradient(x) {               // numpy.gradient, unit spacing, first-order edges
+    const n = x.length, g = new Float64Array(n);
+    if (n < 2) return g;
+    g[0] = x[1] - x[0]; g[n - 1] = x[n - 1] - x[n - 2];
+    for (let i = 1; i < n - 1; i++) g[i] = (x[i + 1] - x[i - 1]) / 2;
+    return g;
+  }
+  function unwrap(a) {                 // numpy.unwrap
+    const out = Float64Array.from(a);
+    let corr = 0;
+    for (let i = 1; i < a.length; i++) {
+      const dd = a[i] - a[i - 1];
+      if (Number.isFinite(dd)) {
+        let m = ((((dd + Math.PI) % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI)) - Math.PI;
+        if (m === -Math.PI && dd > 0) m = Math.PI;
+        if (Math.abs(dd) >= Math.PI) corr += m - dd;
+      }
+      out[i] = a[i] + corr;
+    }
+    return out;
+  }
+  function boxStats(values) {          // matplotlib boxplot: quartiles, whiskers at 1.5 IQR, fliers
+    const s = sortedFinite(values);
+    if (!s.length) return null;
+    const q1 = pctSorted(s, 25), med = pctSorted(s, 50), q3 = pctSorted(s, 75), iqr = q3 - q1;
+    let lo = q3, hi = q1;
+    const fliers = [];
+    for (const v of s) {
+      if (v < q1 - 1.5 * iqr || v > q3 + 1.5 * iqr) fliers.push(v);
+      else { lo = Math.min(lo, v); hi = Math.max(hi, v); }
+    }
+    return { q1, med, q3, lo: Math.min(lo, q1), hi: Math.max(hi, q3), fliers, n: s.length };
+  }
+  const argmax = (a) => { let b = 0; for (let i = 1; i < a.length; i++) if (a[i] > a[b]) b = i; return b; };
+  const rowSum = (r) => r.reduce((x, y) => x + y, 0);
+
+  // ---------- analysis: a port of the notebook template ----------
+  function analyze(pose, cl) {
+    if (!pose || pose.format !== 'etho-pose') throw new Error('not an etho-pose dataset');
+    if (!cl || cl.format !== 'etho-clusters') throw new Error('not an etho-clusters export');
+    const src = cl.source, clip = pose.clips[src.clip.index];
+    const fps = Number(clip.fps), nF = Number(clip.frame_count);
+    const model = cl.model, states = model.states, K = states.length;
+    const COLORS = states.map((s) => s.color), STATE_NAMES = states.map((s) => `S${s.id}`);
+    const animals = cl.animals, A = animals.length;
+    const units = pose.space.units || 'm', TO_DISPLAY = units === 'm' ? 100 : 1, LEN = units === 'm' ? 'cm' : units;
+    const dims = Number(pose.space.dims);
+    const skelOf = {};
+    pose.animals.forEach((a) => { skelOf[a.id] = pose.skeletons[a.skeleton]; });
+    const skel0 = skelOf[animals[0].id];
+    const jointNames = skel0.joints.map((j) => j.name), bones = skel0.bones || [], J = jointNames.length;
+    const axisInfo = cl.features.egocentric_axis || {};
+    const ANT = jointNames.includes(axisInfo.anterior) ? jointNames.indexOf(axisInfo.anterior) : J - 1;
+    const POST = jointNames.includes(axisInfo.posterior) ? jointNames.indexOf(axisInfo.posterior) : 0;
+    const noseName = ['snout', 'nose', 'head'].find((n) => jointNames.includes(n));
+    const NOSE = noseName ? jointNames.indexOf(noseName) : ANT;
+
+    // viewer convention: x, height, z (2D x, y lies on the floor)
+    const up = pose.space.up || '+Y', sgn = up[0] === '-' ? -1 : 1;
+    const toYUp = (p) => {
+      if (dims === 2) return [p[0], 0, p[1]];
+      if (up[1] === 'Y') return [p[0], sgn * p[1], sgn * p[2]];
+      if (up[1] === 'Z') return [p[0], sgn * p[2], -sgn * p[1]];
+      return [sgn * p[1], sgn * p[0], -p[2]];
+    };
+    // frames x joints x 3 (Y up, display units), gaps linearly interpolated (edges held)
+    function trackArray(aid) {
+      const raw = clip.tracks[aid].positions, Ja = skelOf[aid].joints.length;
+      const tmp = new Float64Array(nF * Ja * dims).fill(NaN);
+      for (let f = 0; f < nF; f++) {
+        const fr = raw[f];
+        if (!fr) continue;
+        for (let j = 0; j < Ja; j++) { const q = fr[j]; if (q) for (let c = 0; c < dims; c++) tmp[(f * Ja + j) * dims + c] = q[c] == null ? NaN : q[c]; }
+      }
+      for (let j = 0; j < Ja; j++) for (let c = 0; c < dims; c++) {
+        const at = (f) => (f * Ja + j) * dims + c, known = [];
+        for (let f = 0; f < nF; f++) if (Number.isFinite(tmp[at(f)])) known.push(f);
+        if (!known.length || known.length === nF) continue;
+        let k = 0;
+        for (let f = 0; f < nF; f++) {
+          if (Number.isFinite(tmp[at(f)])) continue;
+          while (k < known.length - 1 && known[k + 1] < f) k++;
+          if (f < known[0]) tmp[at(f)] = tmp[at(known[0])];
+          else if (f > known[known.length - 1]) tmp[at(f)] = tmp[at(known[known.length - 1])];
+          else { const f0 = known[k], f1 = known[k + 1]; tmp[at(f)] = tmp[at(f0)] + ((tmp[at(f1)] - tmp[at(f0)]) * (f - f0)) / (f1 - f0); }
+        }
+      }
+      const out = new Float64Array(nF * Ja * 3);
+      for (let i = 0; i < nF * Ja; i++) {
+        const p = toYUp(Array.from(tmp.subarray(i * dims, i * dims + dims)));
+        for (let c = 0; c < 3; c++) out[i * 3 + c] = p[c] * TO_DISPLAY;
+      }
+      return out;
+    }
+    const P = animals.map((a) => trackArray(a.id));
+    const LABELS = animals.map((a) => Int32Array.from(a.labels));          // 1-based
+    const at = (p, f, j, c) => p[(f * J + j) * 3 + c];
+    const centroids = P.map((p) => {
+      const cen = new Float64Array(nF * 3);
+      for (let f = 0; f < nF; f++) for (let c = 0; c < 3; c++) { let s = 0; for (let j = 0; j < J; j++) s += at(p, f, j, c); cen[f * 3 + c] = s / J; }
+      return cen;
+    });
+
+    // ---- per-frame measures (one row per animal per frame, like the notebook's df)
+    const MEASURES = ['speed', 'accel', 'turn_rate'].concat(dims === 3 ? ['centroid_height', 'max_height'] : [], ['body_length'],
+      A > 1 ? ['nearest_distance', 'nose_nose'] : []);
+    const UNITS = { speed: `${LEN}/s`, accel: `${LEN}/s²`, turn_rate: '°/s', centroid_height: LEN, max_height: LEN, body_length: LEN, nearest_distance: LEN, nose_nose: LEN };
+    const N = A * nF, col = {};
+    MEASURES.forEach((m) => { col[m] = new Float64Array(N); });
+    const rowAnimal = new Int32Array(N), rowState = new Int32Array(N);
+    for (let a = 0; a < A; a++) {
+      const p = P[a], cen = centroids[a], o = a * nF;
+      const vx = gradient(Array.from({ length: nF }, (_, f) => cen[f * 3])).map((v) => v * fps);
+      const vz = gradient(Array.from({ length: nF }, (_, f) => cen[f * 3 + 2])).map((v) => v * fps);
+      const ax = gradient(vx).map((v) => v * fps), az = gradient(vz).map((v) => v * fps);
+      const heading = unwrap(Array.from({ length: nF }, (_, f) => Math.atan2(at(p, f, ANT, 2) - at(p, f, POST, 2), at(p, f, ANT, 0) - at(p, f, POST, 0))));
+      const turn = gradient(heading);
+      for (let f = 0; f < nF; f++) {
+        const r = o + f;
+        rowAnimal[r] = a; rowState[r] = LABELS[a][f];
+        col.speed[r] = Math.hypot(vx[f], vz[f]);
+        col.accel[r] = Math.hypot(ax[f], az[f]);
+        col.turn_rate[r] = Math.abs((turn[f] * fps * 180) / Math.PI);
+        col.body_length[r] = Math.hypot(at(p, f, ANT, 0) - at(p, f, POST, 0), at(p, f, ANT, 1) - at(p, f, POST, 1), at(p, f, ANT, 2) - at(p, f, POST, 2));
+        if (dims === 3) {
+          col.centroid_height[r] = cen[f * 3 + 1];
+          let mh = -Infinity; for (let j = 0; j < J; j++) mh = Math.max(mh, at(p, f, j, 1));
+          col.max_height[r] = mh;
+        }
+        if (A > 1) {
+          let dmin = Infinity, nmin = Infinity;
+          for (let b = 0; b < A; b++) {
+            if (b === a) continue;
+            const q = P[b], cq = centroids[b];
+            dmin = Math.min(dmin, Math.hypot(cq[f * 3] - cen[f * 3], cq[f * 3 + 2] - cen[f * 3 + 2]));
+            nmin = Math.min(nmin, Math.hypot(at(q, f, NOSE, 0) - at(p, f, NOSE, 0), at(q, f, NOSE, 1) - at(p, f, NOSE, 1), at(q, f, NOSE, 2) - at(p, f, NOSE, 2)));
+          }
+          col.nearest_distance[r] = dmin; col.nose_nose[r] = nmin;
+        }
+      }
+    }
+    const byState = (m) => Array.from({ length: K }, (_, c) => { const o = []; for (let r = 0; r < N; r++) if (rowState[r] === c + 1) o.push(col[m][r]); return o; });
+
+    // ---- time budget
+    const counts = new Array(K).fill(0), perAnimal = animals.map(() => new Array(K).fill(0));
+    for (let r = 0; r < N; r++) { const c = rowState[r] - 1; if (c >= 0 && c < K) { counts[c]++; perAnimal[rowAnimal[r]][c]++; } }
+    const share = counts.map((n) => n / N);
+    const perAnimalShare = perAnimal.map((row) => { const s = rowSum(row) || 1; return row.map((n) => n / s); });
+
+    // ---- bouts
+    const bouts = [];
+    animals.forEach((a, ai) => a.bouts.forEach((b) => bouts.push({ animal: ai, state: b.state, start: b.start, end: b.end, duration_s: b.duration_s })));
+    const boutDur = Array.from({ length: K }, (_, c) => bouts.filter((b) => b.state === c + 1).map((b) => b.duration_s));
+    const boutTable = boutDur.map((d) => (d.length ? {
+      bouts: d.length, mean_s: meanOf(d), median_s: median(d), p90_s: percentile(d, 90), total_s: rowSum(d),
+    } : null));
+
+    // ---- transitions
+    const T = Array.from({ length: K }, () => new Array(K).fill(0));
+    LABELS.forEach((lab) => { for (let i = 0; i + 1 < lab.length; i++) if (lab[i + 1] !== lab[i]) T[lab[i] - 1][lab[i + 1] - 1]++; });
+    const Tn = T.map((row) => { const s = rowSum(row); return row.map((v) => (s > 0 ? v / s : 0)); });
+    const M = model.transition_matrix;
+    const stay = M.map((row, i) => row[i]);
+    const expectedBout = stay.map((p) => 1 / Math.max(1 - p, 1e-9) / fps);
+    const nextState = Tn.map((row) => (rowSum(row) ? argmax(row) : -1));
+
+    // ---- feature space
+    const feat = cl.features, red = cl.reduction;
+    const evr = red.explained_variance_ratio || [];
+    const L = red.loadings || [], names = feat.feature_names || [];
+    const npc = red.method === 'pca' ? red.n_components : L.length;
+    let nodeImportance = [], topLoadings = [];
+    if (L.length && names.length) {
+      const imp = new Map();
+      names.forEach((nm, j) => {
+        let v = 0; for (let i = 0; i < L.length; i++) v += L[i][j] * L[i][j] * (evr[i] || 0);
+        const parts = nm.split('/'), key = parts[0] === 'own' ? parts[1] : `${parts[1]} (other)`;
+        imp.set(key, (imp.get(key) || 0) + v);
+      });
+      const tot = [...imp.values()].reduce((x, y) => x + y, 0) || 1;
+      nodeImportance = [...imp.entries()].map(([k, v]) => ({ node: k, pct: (v / tot) * 100 })).sort((x, y) => y.pct - x.pct);
+      for (let i = 0; i < Math.min(3, L.length); i++) {
+        const order = names.map((_, j) => j).sort((x, y) => Math.abs(L[i][y]) - Math.abs(L[i][x])).slice(0, 6);
+        topLoadings.push({ pc: i + 1, evr: evr[i], items: order.map((j) => ({ name: names[j], w: L[i][j] })) });
+      }
+    }
+
+    // ---- PC space
+    const emb = animals.map((a) => a.embedding.map((r) => r.map(Number)));
+    const embDims = emb[0] && emb[0][0] ? emb[0][0].length : 0;
+    const allE = [].concat(...emb), allL = [].concat(...LABELS.map((l) => Array.from(l)));
+    const hasFlow = states.every((s) => s.A != null) && embDims >= 2;
+
+    // ---- per-state medians and z-scores against all frames
+    const allMed = {}, allStd = {};
+    MEASURES.forEach((m) => { allMed[m] = median(col[m]); allStd[m] = stdOf(col[m]); });
+    const med = [], z = [];
+    for (let c = 0; c < K; c++) {
+      med.push({}); z.push({});
+      MEASURES.forEach((m) => {
+        const v = []; for (let r = 0; r < N; r++) if (rowState[r] === c + 1) v.push(col[m][r]);
+        med[c][m] = v.length ? median(v) : NaN;
+        z[c][m] = allStd[m] > 0 ? (med[c][m] - allMed[m]) / allStd[m] : NaN;
+      });
+    }
+
+    // ---- average egocentric pose per state: forward, lateral, height
+    const avgPose = Array.from({ length: K }, () => ({ sum: new Float64Array(J * 3), n: 0 }));
+    const egoAbs = [], egoH = [];
+    for (let a = 0; a < A; a++) {
+      const p = P[a], cen = centroids[a];
+      for (let f = 0; f < nF; f++) {
+        const th = Math.atan2(at(p, f, ANT, 2) - at(p, f, POST, 2), at(p, f, ANT, 0) - at(p, f, POST, 0));
+        const cs = Math.cos(th), sn = Math.sin(th), c = LABELS[a][f] - 1, acc = avgPose[c];
+        for (let j = 0; j < J; j++) {
+          const dx = at(p, f, j, 0) - cen[f * 3], dz = at(p, f, j, 2) - cen[f * 3 + 2];
+          const fw = dx * cs + dz * sn, lat = -dx * sn + dz * cs, h = at(p, f, j, 1);
+          if (acc) { acc.sum[j * 3] += fw; acc.sum[j * 3 + 1] += lat; acc.sum[j * 3 + 2] += h; }
+          egoAbs.push(Math.abs(fw), Math.abs(lat)); egoH.push(h);
+        }
+        if (acc) acc.n++;
+      }
+    }
+    const meanPose = avgPose.map((acc) => (acc.n ? Array.from({ length: J }, (_, j) => [0, 1, 2].map((q) => acc.sum[j * 3 + q] / acc.n)) : null));
+    const poseLim = percentile(egoAbs, 99) * 1.1, heightLim = dims === 3 ? percentile(egoH, 99.5) * 1.1 : 1;
+
+    return {
+      pose, cl, clip, fps, nF, K, A, J, dims, units, LEN, TO_DISPLAY, COLORS, STATE_NAMES, animals, states, model, feat, red,
+      jointNames, bones, ANT, POST, NOSE, axisInfo, MEASURES, UNITS, col, rowAnimal, rowState, N, byState,
+      share, perAnimalShare, bouts, boutDur, boutTable, T, Tn, M, stay, expectedBout, nextState,
+      evr, npc, nodeImportance, topLoadings, emb, embDims, allE, allL, hasFlow, allMed, med, z, meanPose, poseLim, heightLim,
+    };
+  }
+
+  // ---------- text ----------
+  const MEASURE_NAMES = { accel: 'acceleration', nose_nose: 'nose-to-nose distance' };
+  const pretty = (m) => MEASURE_NAMES[m] || m.replace(/_/g, ' ');
+  const pct = (x, d = 1) => `${(x * 100).toFixed(d)}%`;
+  const fmt = (v, d = 2) => (Number.isFinite(v) ? (Math.abs(v) >= 1000 ? v.toFixed(0) : Math.abs(v) >= 100 ? v.toFixed(1) : v.toFixed(d)) : '-');
+  const listJoin = (a) => (a.length <= 1 ? a.join('') : `${a.slice(0, -1).join(', ')} and ${a[a.length - 1]}`);
+  // The standard PDF fonts only carry Latin-1: map the few other symbols we use, drop the rest.
+  const latin1 = (s) => String(s).replace(/[–—−]/g, '-').replace(/→/g, '->').replace(/≈/g, '~').replace(/≥/g, '>=').replace(/≤/g, '<=')
+    .replace(/[‘’]/g, "'").replace(/[“”]/g, '"').replace(/…/g, '...').replace(/[^\x00-\xff]/g, '?');
+
+  function stateSummary(R) {
+    const order = R.share.map((_, c) => c).sort((x, y) => R.share[y] - R.share[x]);
+    return order.map((c) => {
+      const hi = R.MEASURES.filter((m) => R.z[c][m] >= 0.5).map(pretty), lo = R.MEASURES.filter((m) => R.z[c][m] <= -0.5).map(pretty);
+      const desc = [];
+      if (hi.length) desc.push(`higher ${listJoin(hi)}`);
+      if (lo.length) desc.push(`lower ${listJoin(lo)}`);
+      const bt = R.boutTable[c], nxt = R.nextState[c];
+      return {
+        c,
+        text: `${pct(R.share[c])} of time` + (bt ? `, ${bt.bouts} bout${bt.bouts === 1 ? '' : 's'}, median ${bt.median_s.toFixed(2)} s` : '') +
+          (desc.length ? `; ${desc.join(' and ')} than average` : '; close to average on every measure') +
+          (nxt >= 0 ? `; usually followed by ${R.STATE_NAMES[nxt]}` : '') + '.',
+      };
+    });
+  }
+
+  // ---------- drawing primitives ----------
+  const INK = [31, 35, 40], MUTED = [107, 114, 128], RULE = [205, 209, 214], ACCENT = [143, 181, 168], LIGHT = [200, 200, 200];
+  function rgb(c) {
+    if (Array.isArray(c)) return c;
+    const s = String(c || '').trim();
+    let m = /^#([0-9a-f]{6})$/i.exec(s);
+    if (m) return [0, 2, 4].map((i) => parseInt(m[1].slice(i, i + 2), 16));
+    m = /^#([0-9a-f]{3})$/i.exec(s);
+    if (m) return [0, 1, 2].map((i) => parseInt(m[1][i] + m[1][i], 16));
+    m = /^rgba?\(([^)]+)\)$/i.exec(s);
+    if (m) return m[1].split(',').slice(0, 3).map((v) => Math.round(parseFloat(v)));
+    return [128, 128, 128];
+  }
+  const mix = (a, b, t) => a.map((v, i) => Math.round(v + (b[i] - v) * t));
+  const RDBU = ['#053061', '#2166ac', '#4393c3', '#92c5de', '#d1e5f0', '#f7f7f7', '#fddbc7', '#f4a582', '#d6604d', '#b2182b', '#67001f'].map(rgb);
+  const rdbu = (t) => { t = Math.max(0, Math.min(1, t)) * (RDBU.length - 1); const i = Math.min(Math.floor(t), RDBU.length - 2); return mix(RDBU[i], RDBU[i + 1], t - i); };
+  const greys = (t) => { const v = Math.round(255 - 255 * Math.max(0, Math.min(1, t))); return [v, v, v]; };
+  const lum = (c) => 0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2];
+
+  function niceTicks(lo, hi, n = 5) {
+    if (!(hi > lo)) { const d = Math.abs(lo) || 1; lo -= d / 2; hi += d / 2; }
+    const raw = (hi - lo) / n, mag = 10 ** Math.floor(Math.log10(raw)), r = raw / mag;
+    const step = (r < 1.5 ? 1 : r < 3 ? 2 : r < 7 ? 5 : 10) * mag;
+    const out = [];
+    for (let v = Math.ceil(lo / step - 1e-9) * step; v <= hi + step * 1e-9; v += step) out.push(Math.abs(v) < step * 1e-9 ? 0 : v);
+    return out;
+  }
+  const tickLabel = (v, ticks) => {
+    const step = ticks.length > 1 ? Math.abs(ticks[1] - ticks[0]) : Math.abs(v) || 1;
+    const d = Math.max(0, Math.min(4, -Math.floor(Math.log10(step) + 1e-9)));
+    const a = Math.abs(v);
+    return a >= 1e5 ? `${+(v / 1000).toFixed(0)}k` : v.toFixed(d);
+  };
+  function logTicks(lo, hi) {
+    const out = [];
+    for (let e = Math.floor(Math.log10(lo)); e <= Math.ceil(Math.log10(hi)); e++) {
+      for (const m of (Math.log10(hi / lo) < 2 ? [1, 2, 5] : [1])) { const v = m * 10 ** e; if (v >= lo * 0.999 && v <= hi * 1.001) out.push(v); }
+    }
+    return out;
+  }
+
+  function Pdf(jsPDF, opts) {
+    const doc = new jsPDF({ unit: 'pt', format: 'letter', compress: true });
+    const W = doc.internal.pageSize.getWidth(), H = doc.internal.pageSize.getHeight(), M = 54, CW = W - 2 * M;
+    const g = { doc, W, H, M, CW, y: M };
+    const alphaCache = new Map();
+    g.alpha = (a) => {
+      if (!doc.GState) return;
+      if (!alphaCache.has(a)) alphaCache.set(a, new doc.GState({ opacity: a, 'stroke-opacity': a }));
+      doc.setGState(alphaCache.get(a));
+    };
+    g.font = (size, style = 'normal', color = INK) => { doc.setFont('helvetica', style); doc.setFontSize(size); doc.setTextColor(...color); };
+    g.text = (s, x, y, o) => doc.text(latin1(s), x, y, o);
+    g.width = (s) => doc.getTextWidth(latin1(s));
+    g.fill = (c) => doc.setFillColor(...rgb(c));
+    g.stroke = (c, w = 0.6) => { doc.setDrawColor(...rgb(c)); doc.setLineWidth(w); };
+    g.newPage = () => { doc.addPage(); g.y = M; };
+    g.ensure = (h) => { if (g.y + h > H - M) g.newPage(); };
+    g.space = (h) => { g.y += h; };
+    // vertical text (rotated 90 degrees, reading upwards) centred on (x, yMid)
+    g.vtext = (s, x, yMid) => g.text(s, x, yMid + g.width(s) / 2, { angle: 90 });
+    g.polyline = (pts) => {
+      if (pts.length < 2) return;
+      doc.lines(pts.slice(1).map((p, i) => [p[0] - pts[i][0], p[1] - pts[i][1]]), pts[0][0], pts[0][1], [1, 1], 'S', false);
+    };
+    g.opts = opts;
+    return g;
+  }
+
+  // flowing text --------------------------------------------------------------
+  function heading(g, text, level = 1) {
+    const size = level === 1 ? 14 : 11;
+    g.ensure(level === 1 ? 160 : 110);
+    if (level === 1 && g.y > g.M + 1) g.space(10);
+    g.font(size, 'bold');
+    g.text(text, g.M, g.y + size * 0.8);
+    g.y += size * 1.25;
+    if (level === 1) { g.stroke(RULE, 0.6); g.doc.line(g.M, g.y, g.M + g.CW, g.y); g.y += 7; } else g.y += 2;
+  }
+  function paragraph(g, text, { size = 9.5, color = INK, style = 'normal', indent = 0, after = 6, width } = {}) {
+    g.font(size, style, color);
+    const lines = g.doc.splitTextToSize(latin1(text), (width || g.CW) - indent), lh = size * 1.32;
+    lines.forEach((ln) => { g.ensure(lh); g.doc.text(ln, g.M + indent, g.y + size * 0.8); g.y += lh; });
+    g.y += after;
+  }
+  const note = (g, text) => paragraph(g, text, { size: 8.5, color: MUTED, after: 8 });
+  function bullets(g, items, { size = 9.5 } = {}) {
+    items.forEach((it) => {
+      g.font(size); const lines = g.doc.splitTextToSize(latin1(it), g.CW - 12), lh = size * 1.32;
+      g.ensure(lh * Math.min(lines.length, 2));
+      g.fill(ACCENT); g.doc.circle(g.M + 3, g.y + size * 0.5, 1.6, 'F');
+      g.font(size);
+      lines.forEach((ln) => { g.ensure(lh); g.doc.text(ln, g.M + 12, g.y + size * 0.8); g.y += lh; });
+      g.y += 2;
+    });
+    g.y += 4;
+  }
+  // a figure: reserve h points (new page if needed) and draw into the box
+  function figure(g, h, draw) { g.ensure(h); draw({ x: g.M, y: g.y, w: g.CW, h }); g.y += h + 6; }
+
+  // tables: columns [{label, w (fraction), align}], rows of cells (string or {text, color, bold})
+  function table(g, columns, rows, { size = 8.5, swatchCol = -1 } = {}) {
+    const lh = size * 1.6, total = columns.reduce((s, c) => s + c.w, 0), xs = [];
+    let acc = g.M;
+    columns.forEach((c) => { xs.push(acc); acc += (c.w / total) * g.CW; });
+    const cellX = (i, align) => (align === 'right' ? xs[i] + (columns[i].w / total) * g.CW - 4 : xs[i] + 4);
+    const header = () => {
+      g.font(size, 'bold', MUTED);
+      columns.forEach((c, i) => g.text(c.label, cellX(i, c.align), g.y + lh * 0.68, { align: c.align === 'right' ? 'right' : 'left' }));
+      g.y += lh; g.stroke(RULE, 0.6); g.doc.line(g.M, g.y, g.M + g.CW, g.y);
+    };
+    g.ensure(lh * Math.min(rows.length + 1, 4)); header();
+    rows.forEach((row) => {
+      if (g.y + lh > g.H - g.M) { g.newPage(); header(); }
+      row.forEach((cell, i) => {
+        const c = typeof cell === 'object' && cell ? cell : { text: cell };
+        let x = cellX(i, columns[i].align);
+        if (i === swatchCol && c.color) { g.fill(c.color); g.doc.rect(x, g.y + lh * 0.3, 7, 7, 'F'); x += 11; }
+        g.font(size, c.bold ? 'bold' : 'normal', c.muted ? MUTED : INK);
+        const maxW = (columns[i].w / total) * g.CW - 8 - (i === swatchCol ? 11 : 0);
+        let t = latin1(c.text == null ? '' : c.text);
+        if (g.doc.getTextWidth(t) > maxW) {      // truncate with an ellipsis
+          let base = t;
+          while (base.length > 1 && g.doc.getTextWidth(`${base}...`) > maxW) base = base.slice(0, -1);
+          t = `${base}...`;
+        }
+        g.doc.text(t, x, g.y + lh * 0.68, { align: columns[i].align === 'right' ? 'right' : 'left' });
+      });
+      g.y += lh; g.stroke([234, 236, 239], 0.4); g.doc.line(g.M, g.y, g.M + g.CW, g.y);
+    });
+    g.y += 10;
+  }
+
+  // axes ------------------------------------------------------------------------
+  // box {x,y,w,h}; o: xlim, ylim, xlog, ylog, title, titleColor, xlabel, ylabel, xcats (category names),
+  // ycats, noXTicks, noYTicks, padL, padB, rotateX
+  function axes(g, box, o) {
+    const doc = g.doc, padT = o.title ? 14 : 4, padR = o.padR != null ? o.padR : 6;
+    let rot = 0;
+    if (o.rotateX && o.xcats) { g.font(7); rot = Math.max(...o.xcats.map((nm) => g.width(nm))) - 6; }
+    const padB = o.padB != null ? o.padB : (o.noXTicks ? 4 : 14) + (o.xlabel ? 11 : 0) + rot;
+    const padL = o.padL != null ? o.padL : (o.noYTicks ? 4 : 30) + (o.ylabel ? 10 : 0);
+    const px = box.x + padL, py = box.y + padT, pw = Math.max(10, box.w - padL - padR), ph = Math.max(10, box.h - padT - padB);
+    const tx = o.xlog ? Math.log10 : (v) => v, ty = o.ylog ? Math.log10 : (v) => v;
+    const [x0, x1] = o.xlim, [y0, y1] = o.ylim;
+    const X = (v) => px + ((tx(v) - tx(x0)) / (tx(x1) - tx(x0) || 1)) * pw;
+    const Y = (v) => py + ph - ((ty(v) - ty(y0)) / (ty(y1) - ty(y0) || 1)) * ph;
+    const ax = { X, Y, px, py, pw, ph, box };
+    ax.frame = () => {
+      g.stroke([90, 90, 90], 0.6);
+      doc.line(px, py + ph, px + pw, py + ph);
+      doc.line(px, py, px, py + ph);
+      g.font(7, 'normal', MUTED);
+      if (!o.noXTicks) {
+        if (o.xcats) {
+          o.xcats.forEach((nm, i) => {
+            const x = X(i + 0.5);
+            if (o.rotateX) g.text(nm, x + 2.5, py + ph + 4 + g.width(nm), { angle: 90 });
+            else g.text(nm, x, py + ph + 9, { align: 'center' });
+          });
+        } else {
+          const ticks = o.xticks || (o.xlog ? logTicks(x0, x1) : niceTicks(x0, x1, Math.max(3, Math.round(pw / 55))));
+          ticks.filter((v) => v >= Math.min(x0, x1) - 1e-9 && v <= Math.max(x0, x1) + 1e-9).forEach((v) => {
+            g.stroke([90, 90, 90], 0.5); doc.line(X(v), py + ph, X(v), py + ph + 2.5);
+            g.text(o.xfmt ? o.xfmt(v) : tickLabel(v, ticks), X(v), py + ph + 9, { align: 'center' });
+          });
+        }
+      }
+      if (!o.noYTicks) {
+        if (o.ycats) o.ycats.forEach((nm, i) => g.text(nm, px - 3, Y(i + 0.5) + 2.4, { align: 'right' }));
+        else {
+          const ticks = o.yticks || (o.ylog ? logTicks(y0, y1) : niceTicks(y0, y1, Math.max(3, Math.round(ph / 30))));
+          ticks.filter((v) => v >= Math.min(y0, y1) - 1e-9 && v <= Math.max(y0, y1) + 1e-9).forEach((v) => {
+            g.stroke([90, 90, 90], 0.5); doc.line(px - 2.5, Y(v), px, Y(v));
+            g.text(o.yfmt ? o.yfmt(v) : tickLabel(v, ticks), px - 4, Y(v) + 2.4, { align: 'right' });
+          });
+        }
+      }
+      g.font(7.5, 'normal', INK);
+      if (o.xlabel) g.text(o.xlabel, px + pw / 2, box.y + box.h - 2, { align: 'center' });
+      if (o.ylabel) g.vtext(o.ylabel, box.x + 7, py + ph / 2);
+      if (o.title) { g.font(8.5, 'bold', o.titleColor ? rgb(o.titleColor) : INK); g.text(o.title, px + pw / 2, box.y + 9, { align: 'center' }); }
+    };
+    ax.clip = (fn) => { doc.saveGraphicsState(); doc.rect(px, py, pw, ph, null); doc.clip(); doc.discardPath(); fn(); doc.restoreGraphicsState(); };
+    return ax;
+  }
+
+  function legendRow(g, x, y, names, colors, { size = 7.5, maxW } = {}) {
+    let cx = x, cy = y;
+    g.font(size);
+    names.forEach((nm, i) => {
+      const w = 10 + g.width(nm) + 10;
+      if (maxW && cx + w > x + maxW) { cx = x; cy += size * 1.6; }
+      g.fill(colors[i]); g.doc.rect(cx, cy - size * 0.7, 7, 7, 'F');
+      g.font(size); g.text(nm, cx + 10, cy);
+      cx += w;
+    });
+    return cy;
+  }
+
+  function colorbar(g, x, y, w, h, cmap, lo, hi, label, ticks) {
+    const n = 40;
+    for (let i = 0; i < n; i++) { g.fill(cmap(1 - i / (n - 1))); g.doc.rect(x, y + (i * h) / n, w, h / n + 0.3, 'F'); }
+    g.stroke([90, 90, 90], 0.4); g.doc.rect(x, y, w, h, 'S');
+    g.font(6.5, 'normal', MUTED);
+    (ticks || [lo, (lo + hi) / 2, hi]).forEach((v) => { const yy = y + h - ((v - lo) / (hi - lo)) * h; g.text(+v.toFixed(2) === 0 ? '0' : String(+v.toFixed(2)), x + w + 2, yy + 2.2); });
+    if (label) { g.font(6.5, 'normal', INK); g.vtext(label, x + w + 22, y + h / 2); }
+  }
+
+  function boxplotPanel(g, box, R, groups, o) {
+    const K = groups.length, stats = groups.map(boxStats);
+    let lo = Infinity, hi = -Infinity;
+    stats.forEach((s) => { if (!s) return; const v = o.fliers ? [s.lo, s.hi, ...s.fliers] : [s.lo, s.hi]; v.forEach((q) => { lo = Math.min(lo, q); hi = Math.max(hi, q); }); });
+    if (!Number.isFinite(lo)) { lo = 0; hi = 1; }
+    let ylim;
+    if (o.ylog) { lo = Math.max(lo, 1e-3); ylim = [lo / 1.4, hi * 1.4]; } else { const pad = (hi - lo) * 0.06 || 1; ylim = [lo - pad, hi + pad]; }
+    const ax = axes(g, box, { xlim: [0, K], ylim, ylog: o.ylog, xcats: R.STATE_NAMES, rotateX: K > 8, title: o.title, ylabel: o.ylabel, padL: o.padL });
+    const bw = Math.min(18, (ax.pw / K) * 0.6), doc = g.doc;
+    stats.forEach((s, c) => {
+      if (!s) return;
+      const xm = ax.X(c + 0.5), col = rgb(R.COLORS[c]);
+      g.stroke([60, 60, 60], 0.5);
+      doc.line(xm, ax.Y(s.lo), xm, ax.Y(s.q1)); doc.line(xm, ax.Y(s.q3), xm, ax.Y(s.hi));
+      doc.line(xm - bw / 4, ax.Y(s.lo), xm + bw / 4, ax.Y(s.lo)); doc.line(xm - bw / 4, ax.Y(s.hi), xm + bw / 4, ax.Y(s.hi));
+      g.fill(mix(col, [255, 255, 255], 0.2));
+      doc.rect(xm - bw / 2, ax.Y(s.q3), bw, Math.max(0.6, ax.Y(s.q1) - ax.Y(s.q3)), 'FD');
+      g.stroke([0, 0, 0], 1); doc.line(xm - bw / 2, ax.Y(s.med), xm + bw / 2, ax.Y(s.med));
+      if (o.fliers) { g.stroke([90, 90, 90], 0.4); s.fliers.forEach((v) => doc.circle(xm, ax.Y(v), 1.3, 'S')); }
+    });
+    ax.frame();
+    return ax;
+  }
+
+  function heatmapPanel(g, box, mat, o) {
+    const rows = mat.length, cols = mat[0].length;
+    const ax = axes(g, box, { xlim: [0, cols], ylim: [rows, 0], xcats: o.xcats, ycats: o.ycats, rotateX: o.rotateX, title: o.title, xlabel: o.xlabel, ylabel: o.ylabel, padL: o.padL, padR: o.padR });
+    // y axis runs downwards: Y(i) is the top of row i
+    const Ycat = (i) => ax.py + (i / rows) * ax.ph;
+    for (let i = 0; i < rows; i++) for (let j = 0; j < cols; j++) {
+      const v = mat[i][j], c = Number.isFinite(v) ? o.cmap(v) : [235, 235, 235];
+      g.fill(c); g.doc.rect(ax.X(j), Ycat(i), ax.pw / cols + 0.2, ax.ph / rows + 0.2, 'F');
+      const label = o.annot && o.annot(v, i, j);
+      if (label) {
+        g.font(Math.min(7, (ax.pw / cols) / 3.2), 'normal', lum(c) < 120 ? [255, 255, 255] : INK);
+        g.text(label, ax.X(j + 0.5), Ycat(i + 0.5) + 2.3, { align: 'center' });
+      }
+    }
+    ax.frame();
+    return ax;
+  }
+
+  // ---------- report ----------
+  function build(pose, cl, options = {}) {
+    const jsPDF = options.jsPDF || (root.jspdf && root.jspdf.jsPDF);
+    if (!jsPDF) throw new Error('jsPDF is not loaded');
+    const R = analyze(pose, cl);
+    const g = Pdf(jsPDF, options), doc = g.doc;
+    const { K, A, fps, nF, LEN, STATE_NAMES: SN, COLORS } = R;
+    const dsName = (pose.meta && pose.meta.name) || R.cl.source.dataset || 'dataset';
+    const clipName = R.clip.name || `clip ${R.cl.source.clip.index}`;
+    const summary = stateSummary(R);
+    const order = summary.map((s) => s.c);
+    const top = order[0], rare = order[order.length - 1];
+    const anyStd = (m) => R.MEASURES.includes(m);
+
+    // ===== title page =====
+    g.font(20, 'bold'); g.text('Behaviour summary', g.M, g.y + 18); g.y += 28;
+    g.font(12, 'normal', MUTED); g.text(`${dsName}${pose.clips.length > 1 ? `  ·  clip "${clipName}"` : ''}`, g.M, g.y + 10); g.y += 18;
+    g.font(8.5, 'normal', MUTED);
+    g.text(`Generated ${options.date || new Date().toISOString().slice(0, 10)} from the Pose Dataset Viewer's clustering export${R.cl.created ? ` (${R.cl.created.slice(0, 16).replace('T', ' ')} UTC)` : ''}.`, g.M, g.y + 8);
+    g.y += 20;
+    if (pose.meta && pose.meta.description) paragraph(g, pose.meta.description, { size: 9, color: MUTED, after: 8 });
+
+    heading(g, 'At a glance');
+    const glance = [
+      `${nF} frames at ${+fps.toFixed(3)} fps (${(nF / fps).toFixed(1)} s) of ${A} animal${A > 1 ? 's' : ''} with ${R.J} body nodes each (${R.dims}D).`,
+      `A switching linear dynamical model split the behaviour into ${K} states` +
+        (R.model.k_auto != null ? (R.model.k_auto === R.model.k ? ', the number BIC favoured.' : `; BIC favoured ${R.model.k_auto}, ${K} was chosen in the viewer.`) : '.'),
+      `${SN[top]} is the most common state (${pct(R.share[top])} of frames); ${SN[rare]} the rarest (${pct(R.share[rare])}).`,
+    ];
+    const longest = R.boutTable.map((b, c) => (b ? [b.median_s, c] : [-1, c])).sort((x, y) => y[0] - x[0])[0];
+    glance.push(`${R.bouts.length} bouts in total, ${(R.bouts.length / A / (nF / fps / 60)).toFixed(1)} per animal per minute; ${SN[longest[1]]} has the longest typical bout (median ${longest[0].toFixed(2)} s).`);
+    if (A > 1 && anyStd('nearest_distance')) {
+      const close = R.med.map((m, c) => [m.nearest_distance, c]).filter((v) => Number.isFinite(v[0])).sort((x, y) => x[0] - y[0])[0];
+      if (close) glance.push(`Animals are closest in ${SN[close[1]]} (median ${fmt(close[0], 1)} ${LEN} between centroids, against ${fmt(R.allMed.nearest_distance, 1)} ${LEN} overall).`);
+    }
+    if (R.evr.length && R.red.method === 'pca') {
+      const cum = R.red.cumulative_variance ? R.red.cumulative_variance[R.npc - 1] : R.evr.slice(0, R.npc).reduce((x, y) => x + y, 0);
+      glance.push(`${R.npc} principal components carry ${pct(cum)} of the feature variance` + (R.nodeImportance.length ? `; ${listJoin(R.nodeImportance.slice(0, 3).map((n) => n.node))} weigh most in them.` : '.'));
+    }
+    bullets(g, glance);
+
+    heading(g, 'What was clustered', 2);
+    const feat = R.feat, red = R.red, hp = R.model.hyperparameters || {};
+    const info = [
+      ['Feature set', feat.mode], ['Features per sample', String((feat.feature_names || []).length)],
+      ['Removed nodes', (feat.removed_nodes || []).join(', ') || 'none'],
+      ['Egocentric axis', `${R.axisInfo.posterior} -> ${R.axisInfo.anterior}`],
+    ];
+    if (feat.mode === 'social') {
+      info.push(['Other animals rotated onto the body axis', feat.align_others ? 'yes' : 'no']);
+      const k = feat.proximity_kernel;
+      info.push(['Proximity kernel', k ? `Gaussian, d0 = ${k.d0_body_lengths} body lengths (${(k.d0 * R.TO_DISPLAY).toFixed(1)} ${LEN})` : 'off']);
+    }
+    info.push(['Reduction', red.method === 'pca' ? `PCA, ${red.n_components} PCs = ${pct(red.cumulative_variance[red.n_components - 1])} of variance` : `none (model on ${red.n_components} raw features)`]);
+    info.push(['Model', `switching linear dynamics, k = ${R.model.k} (best by BIC: k = ${R.model.k_auto})`]);
+    if (hp.k_min != null) info.push(['k range searched', `${hp.k_min}-${hp.k_max}`]);
+    if (hp.stickiness != null) info.push(['Stickiness', String(hp.stickiness)]);
+    if (R.model.log_likelihood_per_step != null) info.push(['Log-likelihood per step', R.model.log_likelihood_per_step.toFixed(3)]);
+    table(g, [{ label: 'Setting', w: 0.42 }, { label: 'Value', w: 0.58 }], info);
+
+    const ksel = R.model.k_selection || [];
+    if (ksel.length > 1) {
+      heading(g, 'Model selection', 2);
+      paragraph(g, 'Every k in the searched range was fit; BIC (lower is better) trades the fit against the number of parameters. The circled point is the k used for everything in this report.');
+      figure(g, 150, (b) => {
+        const ks = ksel.map((s) => s.k), bic = ksel.map((s) => s.bic);
+        const lo = Math.min(...bic), hi = Math.max(...bic), pad = (hi - lo) * 0.08 || 1;
+        const ax = axes(g, { x: b.x, y: b.y, w: b.w * 0.62, h: b.h }, { xlim: [ks[0] - 0.5, ks[ks.length - 1] + 0.5], ylim: [lo - pad, hi + pad], xticks: ks, xlabel: 'k (number of states)', ylabel: 'BIC', padL: 50 });
+        g.stroke(ACCENT, 1.2); g.polyline(ks.map((k, i) => [ax.X(k), ax.Y(bic[i])]));
+        g.fill(ACCENT); ks.forEach((k, i) => doc.circle(ax.X(k), ax.Y(bic[i]), 2, 'F'));
+        const i = ks.indexOf(R.model.k);
+        if (i >= 0) { g.stroke([0, 0, 0], 1.2); doc.circle(ax.X(ks[i]), ax.Y(bic[i]), 4.5, 'S'); }
+        ax.frame();
+      });
+    }
+
+    // ===== ethogram =====
+    g.newPage();
+    heading(g, '1. Ethogram');
+    const switches = R.animals.map((a) => a.bouts.length - 1);
+    paragraph(g, `The state of each animal over time. Each colour is one state; ${A > 1 ? 'the animals switch' : 'the animal switches'} state ` +
+      `${(switches.reduce((x, y) => x + y, 0) / A / (nF / fps / 60)).toFixed(1)} times per minute on average.`);
+    figure(g, 18 * A + 50, (b) => {
+      const ax = axes(g, { x: b.x, y: b.y + 22, w: b.w, h: b.h - 22 }, { xlim: [0, nF / fps], ylim: [A, 0], xlabel: 'time (s)', noYTicks: true, padL: 58 });
+      R.animals.forEach((an, a) => {
+        an.bouts.forEach((bt) => {
+          g.fill(COLORS[bt.state - 1]);
+          doc.rect(ax.X(bt.start / fps), ax.py + (a / A) * ax.ph + 1, Math.max(0.25, ax.X((bt.end + 1) / fps) - ax.X(bt.start / fps)), ax.ph / A - 2, 'F');
+        });
+        g.font(7.5); g.text(an.name, ax.px - 4, ax.py + ((a + 0.5) / A) * ax.ph + 2.5, { align: 'right' });
+      });
+      ax.frame();
+      legendRow(g, ax.px, b.y + 10, SN, COLORS, { maxW: ax.pw });
+    });
+
+    // ===== time budget =====
+    heading(g, '2. Time budget');
+    let budgetText = `Share of frames in each state, overall and per animal. ${SN[top]} takes ${pct(R.share[top])} of the time` +
+      (order.length > 1 ? ` and ${SN[order[1]]} ${pct(R.share[order[1]])}` : '') + '.';
+    if (A > 1) {
+      const diffs = R.share.map((_, c) => { const v = R.perAnimalShare.map((r) => r[c]); return [Math.max(...v) - Math.min(...v), c, v]; }).sort((x, y) => y[0] - x[0]);
+      const [d, c, v] = diffs[0];
+      if (d >= 0.05) {
+        const hiA = v.indexOf(Math.max(...v)), loA = v.indexOf(Math.min(...v));
+        budgetText += ` The animals differ most in ${SN[c]}: ${R.animals[hiA].name} spends ${pct(v[hiA])} of its time there, ${R.animals[loA].name} ${pct(v[loA])}.`;
+      } else budgetText += ' The animals divide their time between the states in much the same way (no state differs by 5 points or more).';
+    }
+    paragraph(g, budgetText);
+    figure(g, 46 + Math.max(110, 14 * A), (b) => {
+      const w0 = b.w * 0.4;
+      const ax = axes(g, { x: b.x, y: b.y, w: w0, h: b.h }, { xlim: [0, K], ylim: [0, Math.max(...R.share) * 100 * 1.12], xcats: SN, rotateX: K > 8, ylabel: '% of frames', title: 'Overall' });
+      R.share.forEach((s, c) => { g.fill(COLORS[c]); const bw = (ax.pw / K) * 0.7; doc.rect(ax.X(c + 0.5) - bw / 2, ax.Y(s * 100), bw, ax.Y(0) - ax.Y(s * 100), 'F'); });
+      ax.frame();
+      const nameW = Math.max(...R.animals.map((a) => { g.font(7); return g.width(a.name); })) + 10;
+      const ax2 = axes(g, { x: b.x + w0 + 16, y: b.y, w: b.w - w0 - 16, h: b.h }, { xlim: [0, 100], ylim: [A, 0], ycats: R.animals.map((a) => a.name), xlabel: '% of frames', title: 'Per animal', padL: nameW });
+      R.perAnimalShare.forEach((row, a) => {
+        let left = 0;
+        const y0 = ax2.py + (a / A) * ax2.ph, hh = ax2.ph / A;
+        row.forEach((s, c) => { g.fill(COLORS[c]); doc.rect(ax2.X(left * 100), y0 + hh * 0.15, ax2.X((left + s) * 100) - ax2.X(left * 100), hh * 0.7, 'F'); left += s; });
+      });
+      ax2.frame();
+    });
+    if (A > 1) {
+      table(g, [{ label: 'Animal', w: 1.6 }, ...SN.map((n) => ({ label: n, w: 1, align: 'right' }))],
+        R.animals.map((a, i) => [a.name, ...R.perAnimalShare[i].map((s) => `${(s * 100).toFixed(1)}%`)]));
+    }
+
+    // ===== bouts =====
+    heading(g, '3. Bouts');
+    const allDur = R.bouts.map((b) => b.duration_s);
+    const shortest = R.boutTable.map((b, c) => (b ? [b.median_s, c] : [Infinity, c])).sort((x, y) => x[0] - y[0])[0];
+    const frame = 1 / fps;
+    const flicker = R.boutTable.map((b, c) => (b && b.median_s <= 1.5 * frame ? SN[c] : null)).filter(Boolean);
+    paragraph(g, `A bout is an unbroken run of one state in one animal's sequence. Across all ${R.bouts.length} bouts the median lasts ${median(allDur).toFixed(2)} s; ` +
+      `${SN[longest[1]]} has the longest bouts (median ${longest[0].toFixed(2)} s) and ${SN[shortest[1]]} the shortest (median ${shortest[0].toFixed(2)} s).` +
+      (flicker.length ? ` ${listJoin(flicker)} mostly last${flicker.length === 1 ? 's' : ''} a single frame: ${flicker.length === 1 ? 'a transitional state' : 'transitional states'} rather than sustained behaviour.` : ''));
+    figure(g, 170, (b) => boxplotPanel(g, { x: b.x, y: b.y, w: b.w * 0.75, h: b.h }, R, R.boutDur, { ylog: true, fliers: true, ylabel: 'bout duration (s, log scale)', title: 'Bout durations by state', padL: 44 }));
+    table(g, [{ label: 'State', w: 1 }, { label: 'Bouts', w: 1, align: 'right' }, { label: 'Mean (s)', w: 1, align: 'right' }, { label: 'Median (s)', w: 1, align: 'right' },
+      { label: '90th pct (s)', w: 1, align: 'right' }, { label: 'Total (s)', w: 1, align: 'right' }],
+    R.boutTable.map((bt, c) => (bt ? [{ text: SN[c], color: COLORS[c] }, String(bt.bouts), bt.mean_s.toFixed(2), bt.median_s.toFixed(2), bt.p90_s.toFixed(2), bt.total_s.toFixed(1)] : null)).filter(Boolean),
+    { swatchCol: 0 });
+
+    // ===== transitions =====
+    g.ensure(380);
+    heading(g, '4. Transitions');
+    const pairs = [];
+    R.Tn.forEach((row, i) => row.forEach((v, j) => { if (i !== j && v > 0) pairs.push([v, i, j]); }));
+    pairs.sort((x, y) => y[0] - x[0]);
+    const sticky = R.stay.map((p, c) => [p, c]).sort((x, y) => y[0] - x[0]);
+    paragraph(g, 'Left: what follows each bout (rows = from, columns = to; each row sums to 1). Right: the model\'s frame-to-frame transition matrix; its diagonal is the probability of staying in a state for one more frame, so the expected bout lasts about 1 / (1 - p) frames.');
+    if (pairs.length) {
+      paragraph(g, `The most reliable sequences are ${listJoin(pairs.slice(0, 3).map(([v, i, j]) => `${SN[i]} -> ${SN[j]} (${pct(v, 0)} of ${SN[i]} bouts)`))}. ` +
+        `${SN[sticky[0][1]]} is the most persistent state in the model (stay probability ${sticky[0][0].toFixed(3)}, about ${R.expectedBout[sticky[0][1]].toFixed(2)} s per bout).`);
+    }
+    const hmSize = Math.min(g.CW / 2 - 10, 230);
+    figure(g, hmSize, (b) => {
+      const annot = (v) => (K <= 10 && v >= 0.05 ? v.toFixed(2) : '');
+      [[R.Tn, 'Bout-to-bout transitions'], [R.M, 'Model transition matrix (per frame)']].forEach(([mat, title], k) => {
+        const mx = Math.max(1e-9, ...mat.map((r) => Math.max(...r)));
+        const x = b.x + k * (b.w / 2);
+        heatmapPanel(g, { x, y: b.y, w: b.w / 2 - 34, h: b.h }, mat, { cmap: (v) => greys((v / mx) * 0.92), xcats: SN, ycats: SN, rotateX: K > 6, title, xlabel: 'to', ylabel: 'from', annot, padL: 34 });
+        colorbar(g, x + b.w / 2 - 30, b.y + 14, 6, b.h - 46, (t) => greys(t * 0.92), 0, mx, null);
+      });
+    });
+    table(g, [{ label: 'State', w: 1 }, { label: 'Stay probability', w: 1.3, align: 'right' }, { label: 'Expected bout (s)', w: 1.3, align: 'right' }, { label: 'Most common next state', w: 1.6, align: 'right' }],
+      SN.map((nm, c) => [{ text: nm, color: COLORS[c] }, R.stay[c].toFixed(3), R.expectedBout[c].toFixed(2), R.nextState[c] >= 0 ? SN[R.nextState[c]] : '-']), { swatchCol: 0 });
+
+    // ===== feature space =====
+    if (R.evr.length) {
+      g.ensure(330);
+      heading(g, '5. The feature space');
+      let fsText = 'How much variance each principal component carries, and which body parts drive the kept components. Node importance sums each node\'s squared loadings over its axes and the kept PCs, weighted by each PC\'s share of the variance.';
+      if (R.nodeImportance.length) {
+        const own = R.nodeImportance.filter((n) => !/\(other\)$/.test(n.node)).reduce((s, n) => s + n.pct, 0);
+        fsText += ` PC1 alone explains ${pct(R.evr[0])}. The leading nodes are ${listJoin(R.nodeImportance.slice(0, 3).map((n) => `${n.node} (${n.pct.toFixed(0)}%)`))}.`;
+        if (feat.mode === 'social') fsText += ` The animal's own body accounts for ${own.toFixed(0)}% of the weighted loading and the other animal${A > 2 ? 's' : ''} for ${(100 - own).toFixed(0)}%.`;
+      }
+      paragraph(g, fsText);
+      figure(g, 180, (b) => {
+        const shown = Math.min(R.evr.length, Math.max(R.npc + 3, 8)), w0 = b.w * 0.45;
+        let cum = 0; const cums = R.evr.slice(0, shown).map((v) => (cum += v) * 100);
+        const ax = axes(g, { x: b.x, y: b.y, w: w0, h: b.h }, { xlim: [0.4, shown + 0.6], ylim: [0, 105], xticks: Array.from({ length: shown }, (_, i) => i + 1), xlabel: 'PC', ylabel: '% variance', title: 'Variance explained (kept PCs in green)' });
+        R.evr.slice(0, shown).forEach((v, i) => { g.fill(i < R.npc ? ACCENT : LIGHT); doc.rect(ax.X(i + 1) - 0.35 * (ax.pw / shown), ax.Y(v * 100), 0.7 * (ax.pw / shown), ax.Y(0) - ax.Y(v * 100), 'F'); });
+        g.stroke([0, 0, 0], 0.9); g.polyline(cums.map((v, i) => [ax.X(i + 1), ax.Y(v)]));
+        g.fill([0, 0, 0]); cums.forEach((v, i) => doc.circle(ax.X(i + 1), ax.Y(v), 1.5, 'F'));
+        ax.frame();
+        if (R.nodeImportance.length) {
+          const items = R.nodeImportance.slice(0, 15), n = items.length;
+          g.font(7); const nameW = Math.max(...items.map((it) => g.width(it.node))) + 8;
+          const ax2 = axes(g, { x: b.x + w0 + 20, y: b.y, w: b.w - w0 - 20, h: b.h }, { xlim: [0, Math.max(...items.map((i) => i.pct)) * 1.1], ylim: [n, 0], ycats: items.map((i) => i.node), xlabel: '% of weighted loading', title: 'Node importance in the kept PCs', padL: nameW });
+          items.forEach((it, i) => { g.fill(/\(other\)$/.test(it.node) ? mix(ACCENT, [70, 90, 140], 0.5) : ACCENT); doc.rect(ax2.X(0), ax2.py + (i / n) * ax2.ph + 1, ax2.X(it.pct) - ax2.X(0), ax2.ph / n - 2, 'F'); });
+          ax2.frame();
+        }
+      });
+      if (R.topLoadings.length) {
+        paragraph(g, 'Strongest loadings of the first principal components (feature: weight). A feature is animal/node/axis in the animal\'s own frame; "other" features describe the other animal.', { size: 8.5, color: MUTED });
+        const rows = Array.from({ length: 6 }, (_, r) => R.topLoadings.map((t) => (t.items[r] ? `${t.items[r].name} (${t.items[r].w >= 0 ? '+' : ''}${t.items[r].w.toFixed(2)})` : '')));
+        table(g, R.topLoadings.map((t) => ({ label: `PC${t.pc} (${(t.evr * 100).toFixed(0)}%)`, w: 1 })), rows, { size: 7.5 });
+      }
+    }
+
+    // ===== PC space =====
+    if (R.embDims >= 1) {
+      g.ensure(400);
+      heading(g, '6. States in PC space');
+      paragraph(g, 'Every frame in the first two principal components, coloured by state; then one panel per state with its flow field (the step its linear dynamics predicts from each point, other PCs held at the state\'s mean) and its 15 longest bouts as trajectories. The circled cross marks the field\'s fixed point, where its trajectories converge or circle.');
+      const E = R.allE, Lb = R.allL, nPts = E.length, stride = Math.max(1, Math.ceil(nPts / 6000));
+      const ex = (i) => E[i][0], ey = (i) => (R.embDims > 1 ? E[i][1] : 0);
+      const xs = E.map((e) => e[0]), ys = E.map((e) => (R.embDims > 1 ? e[1] : 0));
+      let x0 = percentile(xs, 0.5), x1 = percentile(xs, 99.5), y0 = percentile(ys, 0.5), y1 = percentile(ys, 99.5);
+      const pxp = 0.08 * (x1 - x0 || 1), pyp = 0.08 * (y1 - y0 || 1);
+      x0 -= pxp; x1 += pxp; y0 -= pyp; y1 += pyp;
+      const ev = (i) => (R.evr[i] != null ? ` (${(R.evr[i] * 100).toFixed(0)}%)` : '');
+      figure(g, 250, (b) => {
+        const ax = axes(g, { x: b.x, y: b.y, w: b.w * 0.62, h: b.h }, { xlim: [x0, x1], ylim: [y0, y1], xlabel: `PC1${ev(0)}`, ylabel: R.embDims > 1 ? `PC2${ev(1)}` : '', title: 'Frames in PC space' });
+        ax.clip(() => {
+          g.alpha(0.7);
+          for (let c = 0; c < K; c++) {
+            g.fill(COLORS[c]);
+            for (let i = 0; i < nPts; i += stride) if (Lb[i] === c + 1) doc.circle(ax.X(ex(i)), ax.Y(ey(i)), 1.1, 'F');
+          }
+          g.alpha(1);
+        });
+        ax.frame();
+        let ly = b.y + 24;
+        g.font(7.5);
+        SN.forEach((nm, c) => { g.fill(COLORS[c]); doc.rect(b.x + b.w * 0.66, ly - 6, 7, 7, 'F'); g.font(7.5); g.text(`${nm}  ${pct(R.share[c], 0)}`, b.x + b.w * 0.66 + 11, ly); ly += 12; });
+        if (stride > 1) { g.font(6.5, 'normal', MUTED); g.text(`every ${stride}th frame shown`, b.x + b.w * 0.66, ly + 4); }
+      });
+
+      if (R.embDims >= 2) {
+        const cols = K > 4 ? 3 : 2, rowsN = Math.ceil(K / cols), pw = (g.CW - (cols - 1) * 8) / cols, ph = pw * 0.82;
+        const m = R.hasFlow ? R.states[0].A.length : 0, gx = 11, gy = 9;
+        const longestOf = (c) => R.bouts.filter((bt) => bt.state === c + 1 && bt.end > bt.start).sort((p, q) => (q.end - q.start) - (p.end - p.start)).slice(0, 15);
+        const bgStride = Math.max(1, Math.ceil(nPts / 3000));
+        for (let r = 0; r < rowsN; r++) {
+          figure(g, ph, (b) => {
+            for (let k = 0; k < cols; k++) {
+              const c = r * cols + k;
+              if (c >= K) break;
+              const ax = axes(g, { x: b.x + k * (pw + 8), y: b.y, w: pw, h: ph }, { xlim: [x0, x1], ylim: [y0, y1], noXTicks: true, noYTicks: true, title: `${SN[c]} · ${pct(R.share[c], 0)} of time`, titleColor: COLORS[c] });
+              ax.clip(() => {
+                g.alpha(0.35); g.fill(LIGHT);
+                for (let i = 0; i < nPts; i += bgStride) doc.rect(ax.X(ex(i)) - 0.55, ax.Y(ey(i)) - 0.55, 1.1, 1.1, 'F');
+                g.alpha(1);
+                const members = []; for (let i = 0; i < nPts; i++) if (Lb[i] === c + 1) members.push(i);
+                const st = R.states[c];
+                if (R.hasFlow && members.length && m >= 2) {
+                  const mu = Array.from({ length: m }, (_, q) => members.reduce((s, i) => s + (E[i][q] || 0), 0) / members.length);
+                  const vecs = [];
+                  for (let iy = 0; iy < gy; iy++) for (let ix = 0; ix < gx; ix++) {
+                    const z = mu.slice(); z[0] = x0 + ((x1 - x0) * ix) / (gx - 1); z[1] = y0 + ((y1 - y0) * iy) / (gy - 1);
+                    const v = [0, 1].map((q) => st.A[q].reduce((s, a, j) => s + a * z[j], 0) + st.b[q] - z[q]);
+                    vecs.push([z[0], z[1], ax.X(z[0] + v[0]) - ax.X(z[0]), ax.Y(z[1] + v[1]) - ax.Y(z[1])]);
+                  }
+                  // arrows scaled so the longest spans about one grid cell (matplotlib quiver autoscale)
+                  const cell = Math.min(ax.pw / gx, ax.ph / gy), lmax = Math.max(1e-9, ...vecs.map((v) => Math.hypot(v[2], v[3]))), sc = (0.9 * cell) / lmax;
+                  g.stroke([119, 119, 119], 0.5); g.fill([119, 119, 119]);
+                  vecs.forEach(([zx, zy, dx, dy]) => {
+                    const X0 = ax.X(zx), Y0 = ax.Y(zy), X1 = X0 + dx * sc, Y1 = Y0 + dy * sc, len = Math.hypot(X1 - X0, Y1 - Y0);
+                    if (len < 0.3) return;
+                    doc.line(X0, Y0, X1, Y1);
+                    const ux = (X1 - X0) / len, uy = (Y1 - Y0) / len, hl = Math.min(2.6, len * 0.45);
+                    doc.triangle(X1, Y1, X1 - ux * hl - uy * hl * 0.5, Y1 - uy * hl + ux * hl * 0.5, X1 - ux * hl + uy * hl * 0.5, Y1 - uy * hl - ux * hl * 0.5, 'F');
+                  });
+                }
+                g.stroke(COLORS[c], 0.9);
+                longestOf(c).forEach((bt) => {
+                  const e = R.emb[bt.animal].slice(bt.start, bt.end + 1);
+                  g.polyline(e.map((p) => [ax.X(p[0]), ax.Y(p[1])]));
+                  g.fill(COLORS[c]); doc.circle(ax.X(e[0][0]), ax.Y(e[0][1]), 1.3, 'F');
+                });
+                const fp = st.fixed_point;
+                if (R.hasFlow && fp && fp[0] >= x0 && fp[0] <= x1 && fp[1] >= y0 && fp[1] <= y1) {
+                  const X = ax.X(fp[0]), Y = ax.Y(fp[1]);
+                  g.stroke([0, 0, 0], 0.9); doc.circle(X, Y, 3.6, 'S');
+                  doc.line(X - 2.5, Y - 2.5, X + 2.5, Y + 2.5); doc.line(X - 2.5, Y + 2.5, X + 2.5, Y - 2.5);
+                }
+              });
+              g.stroke(RULE, 0.5); doc.rect(ax.px, ax.py, ax.pw, ax.ph, 'S');
+              g.font(8.5, 'bold', rgb(COLORS[c])); g.text(`${SN[c]} · ${pct(R.share[c], 0)} of time`, ax.px + ax.pw / 2, ax.box.y + 9, { align: 'center' });
+            }
+          });
+        }
+        if (!R.hasFlow) note(g, 'The model was fit on the raw features, so its flow fields are not in PC space: only the bouts are drawn.');
+      }
+    }
+
+    // ===== behaviour per state =====
+    g.ensure(330);
+    heading(g, '7. Behaviour in each state');
+    paragraph(g, `Per-frame measures for every animal: centroid speed and acceleration on the floor, turning rate of the body axis` +
+      (R.dims === 3 ? ', centroid and maximum height' : '') + ', body length (anterior-posterior distance)' +
+      (A > 1 ? ' and, with several animals, the distance to the nearest other animal and the nose-to-nose distance' : '') +
+      '. Derivatives use central differences. Boxes span the quartiles, whiskers 1.5 x IQR; outliers are not drawn.');
+    const extremes = R.MEASURES.map((m) => {
+      const v = R.med.map((x, c) => [x[m], c]).filter((q) => Number.isFinite(q[0])).sort((p, q) => q[0] - p[0]);
+      return v.length > 1 ? `${pretty(m)}: highest in ${SN[v[0][1]]} (${fmt(v[0][0])} ${R.UNITS[m]}), lowest in ${SN[v[v.length - 1][1]]} (${fmt(v[v.length - 1][0])})` : null;
+    }).filter(Boolean);
+    bullets(g, extremes, { size: 8.5 });
+    const nm = R.MEASURES.length, mcols = 3, mrows = Math.ceil(nm / mcols), mw = (g.CW - (mcols - 1) * 10) / mcols;
+    for (let r = 0; r < mrows; r++) {
+      figure(g, 120, (b) => {
+        for (let k = 0; k < mcols; k++) {
+          const i = r * mcols + k;
+          if (i >= nm) break;
+          const m = R.MEASURES[i];
+          boxplotPanel(g, { x: b.x + k * (mw + 10), y: b.y, w: mw, h: b.h }, R, R.byState(m), { title: `${pretty(m)} (${R.UNITS[m]})` });
+        }
+      });
+    }
+    g.ensure(140 + 16 * K);
+    heading(g, 'How each state differs', 2);
+    paragraph(g, 'The median of each measure per state, as a z-score against all frames: (state median - overall median) / overall standard deviation. Red is above average, blue below.');
+    g.font(7); const rotH = Math.max(...R.MEASURES.map((m) => g.width(pretty(m))));
+    figure(g, 4 + 16 * K + 8 + rotH, (b) => {
+      const mat = R.z.map((row) => R.MEASURES.map((m) => row[m]));
+      const w = Math.min(b.w - 60, 50 + nm * 52);
+      heatmapPanel(g, { x: b.x, y: b.y, w, h: b.h }, mat, {
+        cmap: (v) => rdbu((v + 2) / 4), xcats: R.MEASURES.map(pretty), ycats: SN, rotateX: true, padL: 30,
+        annot: (v) => (!Number.isFinite(v) ? '' : Math.abs(v) < 0.05 ? '0.0' : `${v > 0 ? '+' : ''}${v.toFixed(1)}`),
+      });
+      colorbar(g, b.x + w + 8, b.y + 4, 7, 16 * K, (t) => rdbu(t), -2, 2, 'z', [-2, -1, 0, 1, 2]);
+    });
+    paragraph(g, 'Median of each measure per state:', { size: 8.5, color: MUTED, after: 2 });
+    table(g, [{ label: 'Measure', w: 2.6 }, ...SN.map((nm) => ({ label: nm, w: 1, align: 'right' })), { label: 'all', w: 1, align: 'right' }],
+      R.MEASURES.map((m) => [`${pretty(m)} (${R.UNITS[m]})`, ...R.med.map((row) => fmt(row[m])), { text: fmt(R.allMed[m]), bold: true }]), { size: K > 10 ? 6.5 : 7.5 });
+
+    // ===== average pose =====
+    g.ensure(200);
+    heading(g, '8. Average pose in each state');
+    paragraph(g, `Every frame expressed in the animal's own frame (centroid at the origin, body axis pointing right) and averaged per state. ` +
+      `Top row: seen from above${R.dims === 3 ? '; bottom row: seen from the side' : ''}.`);
+    {
+      const perRow = Math.min(K, 6), s = (g.CW - (perRow - 1) * 6) / perRow, lim = R.poseLim || 1, hl = R.heightLim || 1;
+      const sideH = R.dims === 3 ? Math.min(s, Math.max(24, (s * (1.1 * hl)) / (2 * lim))) : 0;
+      for (let r0 = 0; r0 < K; r0 += perRow) {
+        figure(g, 14 + s + (sideH ? sideH + 4 : 0), (b) => {
+          for (let k = 0; k < perRow && r0 + k < K; k++) {
+            const c = r0 + k, mp = R.meanPose[c], x = b.x + k * (s + 6), col = rgb(COLORS[c]);
+            g.font(8.5, 'bold', col); g.text(SN[c], x + s / 2, b.y + 9, { align: 'center' });
+            g.stroke([234, 236, 239], 0.5); doc.rect(x, b.y + 14, s, s, 'S');
+            if (sideH) doc.rect(x, b.y + 18 + s, s, sideH, 'S');
+            if (!mp) continue;
+            const views = [[(p) => x + ((p[0] + lim) / (2 * lim)) * s, (p) => b.y + 14 + s - ((p[1] + lim) / (2 * lim)) * s]];
+            if (sideH) views.push([(p) => x + ((p[0] + lim) / (2 * lim)) * s, (p) => b.y + 18 + s + sideH - ((p[2] + 0.1 * hl) / (1.1 * hl)) * sideH]);
+            views.forEach(([fx, fy]) => {
+              g.stroke(col, 1.4); doc.setLineCap('round');
+              R.bones.forEach(([i, j]) => { if (mp[i] && mp[j]) doc.line(fx(mp[i]), fy(mp[i]), fx(mp[j]), fy(mp[j])); });
+              g.fill(col); mp.forEach((p) => doc.circle(fx(p), fy(p), 1.2, 'F'));
+              doc.setLineCap('butt');
+            });
+          }
+        });
+      }
+      g.font(7, 'normal', MUTED);
+      g.text(`Each box spans ${(2 * lim).toFixed(1)} ${LEN} along the body axis.`, g.M, g.y + 6); g.y += 16;
+    }
+
+    // ===== summary =====
+    g.ensure(160);
+    heading(g, '9. Summary');
+    paragraph(g, 'A plain-language description of each state, most common first: its share of time, typical bout length, what usually follows it, and the measures where its median is well above or below the median over all frames (|z| >= 0.5).');
+    summary.forEach(({ c, text }) => {
+      g.font(9.5); const lines = doc.splitTextToSize(latin1(text), g.CW - 34), lh = 9.5 * 1.32;
+      g.ensure(lh * lines.length + 6);
+      g.fill(COLORS[c]); doc.rect(g.M, g.y + 1.5, 8, 8, 'F');
+      g.font(9.5, 'bold'); g.text(SN[c], g.M + 12, g.y + 9.5 * 0.8);
+      g.font(9.5); lines.forEach((ln, i) => { doc.text(ln, g.M + 34, g.y + 9.5 * 0.8 + i * lh); });
+      g.y += lh * lines.length + 6;
+    });
+    note(g, 'All numbers are recomputed from the exported pose data and clustering output (etho-pose and etho-clusters files); missing pose samples are linearly interpolated. Lengths are in ' + LEN + '.');
+
+    // footers
+    const n = doc.getNumberOfPages();
+    for (let i = 1; i <= n; i++) {
+      doc.setPage(i);
+      g.font(7, 'normal', MUTED);
+      g.text(`Behaviour summary · ${dsName}${pose.clips.length > 1 ? ` · ${clipName}` : ''}`, g.M, g.H - 30);
+      g.text(`${i} / ${n}`, g.W - g.M, g.H - 30, { align: 'right' });
+    }
+    return doc;
+  }
+
+  root.EthoReport = { analyze, build };
+  if (typeof module !== 'undefined' && module.exports) module.exports = root.EthoReport;
+})(typeof globalThis !== 'undefined' ? globalThis : this);
 </script>
 <script type="application/json" id="nb-cells">[{"type": "markdown", "source": "## 1. Setup\nLoads the pose data (etho-pose 1.x) and the clustering output (etho-clusters 1.x), rebuilds each\nanimal's pose for the clustered clip, and computes the per-frame measures used below."}, {"type": "code", "source": "import json\nimport numpy as np\nimport pandas as pd\nimport matplotlib.pyplot as plt\nfrom matplotlib.colors import ListedColormap\n\nplt.rcParams.update({\n    'figure.dpi': 110, 'axes.spines.top': False, 'axes.spines.right': False,\n    'axes.titlesize': 11, 'axes.labelsize': 10, 'font.size': 9,\n})\npd.set_option('display.precision', 3)\ntry:\n    from IPython.display import display, Markdown\nexcept ImportError:                       # plain Python: print instead\n    display = print\n    Markdown = str\n\n\ndef boxplot(ax, data, labels, **kw):\n    \"\"\"ax.boxplot across matplotlib versions (tick_labels since 3.9, labels before).\"\"\"\n    data = [d if len(d) else [np.nan] for d in data]\n    try:\n        return ax.boxplot(data, tick_labels=labels, **kw)\n    except TypeError:\n        return ax.boxplot(data, labels=labels, **kw)\n\nwith open(POSE_PATH) as f:\n    pose = json.load(f)\nwith open(CLUSTERS_PATH) as f:\n    cl = json.load(f)\nassert pose.get('format') == 'etho-pose', 'POSE_PATH is not an etho-pose file'\nassert cl.get('format') == 'etho-clusters', 'CLUSTERS_PATH is not an etho-clusters file'\n\nsrc = cl['source']\nclip = pose['clips'][src['clip']['index']]\nfps = float(clip['fps'])\nnF = int(clip['frame_count'])\nmodel = cl['model']\nstates = model['states']\nK = len(states)\nCOLORS = [s['color'] for s in states]\nSTATE_NAMES = [f\"S{s['id']}\" for s in states]\nCMAP = ListedColormap(COLORS)\nanimals = cl['animals']\nA = len(animals)\nunits = pose['space'].get('units', 'm')\nTO_DISPLAY = 100.0 if units == 'm' else 1.0          # metres are shown in cm\nLEN = 'cm' if units == 'm' else units\ndims = int(pose['space']['dims'])\nskel_of = {a['id']: pose['skeletons'][a['skeleton']] for a in pose['animals']}\n\n\ndef to_y_up(p):\n    \"\"\"Viewer convention: x, height, z. 2D (x, y) lies on the floor.\"\"\"\n    p = np.asarray(p, float)\n    if dims == 2:\n        return np.stack([p[..., 0], np.zeros(p.shape[:-1]), p[..., 1]], -1)\n    up = pose['space'].get('up', '+Y')\n    s = -1.0 if up[0] == '-' else 1.0\n    if up[1] == 'Y':\n        return np.stack([p[..., 0], s * p[..., 1], s * p[..., 2]], -1)\n    if up[1] == 'Z':\n        return np.stack([p[..., 0], s * p[..., 2], -s * p[..., 1]], -1)\n    return np.stack([s * p[..., 1], s * p[..., 0], -p[..., 2]], -1)\n\n\ndef track_array(animal_id):\n    \"\"\"frames x joints x 3 (Y up, display units), missing samples linearly interpolated.\"\"\"\n    raw = clip['tracks'][animal_id]['positions']\n    J = len(skel_of[animal_id]['joints'])\n    out = np.full((nF, J, dims), np.nan)\n    for f, fr in enumerate(raw):\n        if fr is None:\n            continue\n        for j, q in enumerate(fr):\n            if q is not None:\n                out[f, j] = q\n    t = np.arange(nF)\n    for j in range(J):\n        for c in range(dims):\n            v = out[:, j, c]\n            ok = ~np.isnan(v)\n            if ok.any() and not ok.all():\n                out[:, j, c] = np.interp(t, t[ok], v[ok])\n    return to_y_up(out) * TO_DISPLAY\n\n\nP = {a['id']: track_array(a['id']) for a in animals}\nLABELS = {a['id']: np.asarray(a['labels'], int) for a in animals}   # 1-based state ids\njoint_names = [j['name'] for j in skel_of[animals[0]['id']]['joints']]\nbones = skel_of[animals[0]['id']].get('bones', [])\nJ = len(joint_names)\naxis_info = cl['features'].get('egocentric_axis', {})\nANT = joint_names.index(axis_info['anterior']) if axis_info.get('anterior') in joint_names else J - 1\nPOST = joint_names.index(axis_info['posterior']) if axis_info.get('posterior') in joint_names else 0\nNOSE = next((joint_names.index(n) for n in ('snout', 'nose', 'head') if n in joint_names), ANT)\nprint(f\"{pose.get('meta', {}).get('name', 'dataset')} \u00b7 clip '{clip.get('name', src['clip']['index'])}': \"\n      f\"{nF} frames at {fps:g} fps ({nF / fps:.1f} s), {A} animal(s), {J} nodes, {K} states\")"}, {"type": "markdown", "source": "### Per-frame measures\nFor every animal and frame: centroid speed and acceleration (floor plane), turning rate of the body\naxis, centroid and maximum height (3D data), body length (anterior\u2013posterior distance) and, with\nseveral animals, distance to the nearest other animal and nose-to-nose distance. Derivatives use\ncentral differences."}, {"type": "code", "source": "def central_diff(x, axis=0):\n    d = np.gradient(x, axis=axis)\n    return d * fps\n\n\nrows = []\nfor a in animals:\n    aid = a['id']\n    p = P[aid]\n    cen = p.mean(axis=1)                                   # frames x 3\n    vel = central_diff(cen[:, [0, 2]])\n    speed = np.linalg.norm(vel, axis=1)\n    accel = np.linalg.norm(central_diff(vel), axis=1)\n    axis_vec = p[:, ANT, [0, 2]] - p[:, POST, [0, 2]]\n    heading = np.unwrap(np.arctan2(axis_vec[:, 1], axis_vec[:, 0]))\n    turn = np.degrees(central_diff(heading))\n    body_len = np.linalg.norm(p[:, ANT] - p[:, POST], axis=1)\n    rec = dict(animal=a['name'], animal_id=aid, frame=np.arange(nF), time_s=np.arange(nF) / fps,\n               state=LABELS[aid], speed=speed, accel=accel, turn_rate=np.abs(turn), body_length=body_len)\n    if dims == 3:\n        rec['centroid_height'] = cen[:, 1]\n        rec['max_height'] = p[:, :, 1].max(axis=1)\n    if A > 1:\n        others = [P[b['id']] for b in animals if b['id'] != aid]\n        dist = np.min([np.linalg.norm(o.mean(axis=1)[:, [0, 2]] - cen[:, [0, 2]], axis=1) for o in others], axis=0)\n        nose = np.min([np.linalg.norm(o[:, NOSE] - p[:, NOSE], axis=1) for o in others], axis=0)\n        rec['nearest_distance'] = dist\n        rec['nose_nose'] = nose\n    rows.append(pd.DataFrame(rec))\ndf = pd.concat(rows, ignore_index=True)\nMEASURES = [c for c in ['speed', 'accel', 'turn_rate', 'centroid_height', 'max_height', 'body_length',\n                        'nearest_distance', 'nose_nose'] if c in df]\nUNITS = dict(speed=f'{LEN}/s', accel=f'{LEN}/s\u00b2', turn_rate='\u00b0/s', centroid_height=LEN, max_height=LEN,\n             body_length=LEN, nearest_distance=LEN, nose_nose=LEN)\ndf.head()"}, {"type": "markdown", "source": "## 2. What was clustered\nThe input features, the reduction and the model settings, exactly as exported by the viewer."}, {"type": "code", "source": "feat = cl['features']\nred = cl['reduction']\ninfo = {\n    'feature set': feat['mode'],\n    'features per sample': len(feat.get('feature_names', [])),\n    'removed nodes': ', '.join(feat.get('removed_nodes', [])) or 'none',\n    'egocentric axis': f\"{axis_info.get('posterior')} \u2192 {axis_info.get('anterior')}\",\n}\nif feat['mode'] == 'social':\n    info['other animals rotated onto the body axis'] = feat.get('align_others')\n    k = feat.get('proximity_kernel')\n    info['proximity kernel'] = (f\"Gaussian, d0 = {k['d0_body_lengths']} body lengths ({k['d0'] * TO_DISPLAY:.1f} {LEN})\"\n                                if k else 'off')\ninfo['reduction'] = (f\"PCA, {red['n_components']} PCs = {100 * red['cumulative_variance'][red['n_components'] - 1]:.1f}% of variance\"\n                     if red['method'] == 'pca' else f\"none (model on {red['n_components']} raw features)\")\ninfo['model'] = f\"switching linear dynamics, k = {model['k']} (best by BIC: k = {model['k_auto']})\"\nhp = model.get('hyperparameters', {})\ninfo['k range searched'] = f\"{hp.get('k_min')}\u2013{hp.get('k_max')}\"\ninfo['stickiness'] = hp.get('stickiness')\ninfo['log-likelihood per step'] = round(model['log_likelihood_per_step'], 3)\npd.Series(info, name='value').to_frame()"}, {"type": "markdown", "source": "### Model selection\nEvery k in the searched range was fit; BIC (lower is better) trades fit against the number of\nparameters. The marked point is the k used for everything below."}, {"type": "code", "source": "ks = [r['k'] for r in model['k_selection']]\nbic = [r['bic'] for r in model['k_selection']]\nfig, ax = plt.subplots(figsize=(6, 2.6))\nax.plot(ks, bic, '-o', color='#8fb5a8', ms=4)\nax.plot([model['k']], [bic[ks.index(model['k'])]], 'o', color='black', ms=8, mfc='none', mew=1.5)\nax.set_xlabel('k (number of states)'); ax.set_ylabel('BIC'); ax.set_xticks(ks)\nax.set_title('BIC by number of states')\nplt.show()"}, {"type": "markdown", "source": "## 3. Ethogram\nState over time for each animal."}, {"type": "code", "source": "fig, ax = plt.subplots(figsize=(10, 0.55 * A + 0.9))\nmat = np.array([LABELS[a['id']] - 1 for a in animals])\nax.imshow(mat, aspect='auto', cmap=CMAP, vmin=-0.5, vmax=K - 0.5, interpolation='nearest',\n          extent=[0, nF / fps, A - 0.5, -0.5])\nax.set_yticks(range(A)); ax.set_yticklabels([a['name'] for a in animals])\nax.set_xlabel('time (s)')\nhandles = [plt.Rectangle((0, 0), 1, 1, color=c) for c in COLORS]\nax.legend(handles, STATE_NAMES, ncol=min(K, 8), bbox_to_anchor=(0, 1.02, 1, 0.2), loc='lower left', frameon=False, fontsize=8)\nplt.show()"}, {"type": "markdown", "source": "## 4. Time budget\nShare of frames in each state, overall and per animal."}, {"type": "code", "source": "share = df.groupby('state').size().reindex(range(1, K + 1), fill_value=0) / len(df)\nper_animal = df.groupby(['animal', 'state']).size().unstack(fill_value=0).reindex(columns=range(1, K + 1), fill_value=0)\nper_animal = per_animal.div(per_animal.sum(axis=1), axis=0)\nfig, axes = plt.subplots(1, 2, figsize=(10, 2.8), gridspec_kw=dict(width_ratios=[1, 1.4]))\naxes[0].bar(STATE_NAMES, share.values * 100, color=COLORS)\naxes[0].set_ylabel('% of frames'); axes[0].set_title('Overall')\nleft = np.zeros(len(per_animal))\nfor c in range(K):\n    axes[1].barh(per_animal.index, per_animal[c + 1] * 100, left=left, color=COLORS[c], label=STATE_NAMES[c])\n    left += per_animal[c + 1].values * 100\naxes[1].set_xlabel('% of frames'); axes[1].set_title('Per animal')\nplt.tight_layout(); plt.show()\n(per_animal * 100).round(1).rename(columns=dict(enumerate(STATE_NAMES, 1)))"}, {"type": "markdown", "source": "## 5. Bouts\nA bout is an unbroken run of one state within one animal's sequence."}, {"type": "code", "source": "bout_rows = []\nfor a in animals:\n    for b in a['bouts']:\n        bout_rows.append(dict(animal=a['name'], state=b['state'], start=b['start'], end=b['end'], duration_s=b['duration_s']))\nbouts = pd.DataFrame(bout_rows)\nfig, ax = plt.subplots(figsize=(8, 3))\ndata = [bouts.loc[bouts.state == c, 'duration_s'].values for c in range(1, K + 1)]\nbp = boxplot(ax, data, STATE_NAMES, patch_artist=True, showfliers=True, medianprops=dict(color='black'), flierprops=dict(ms=3))\nfor patch, c in zip(bp['boxes'], COLORS):\n    patch.set_facecolor(c); patch.set_alpha(0.75)\nax.set_yscale('log'); ax.set_ylabel('bout duration (s, log scale)'); ax.set_title('Bout durations by state')\nplt.show()\nbout_table = bouts.groupby('state')['duration_s'].agg(bouts='count', mean_s='mean', median_s='median',\n                                                     p90_s=lambda x: np.percentile(x, 90), total_s='sum')\nbout_table.index = [STATE_NAMES[i - 1] for i in bout_table.index]\nbout_table"}, {"type": "markdown", "source": "## 6. Transitions\nLeft: what follows each bout (rows = from, columns = to; each row sums to 1). Right: the model's\nframe-to-frame transition matrix, whose diagonal is the probability of staying in a state for one\nmore frame (expected bout length \u2248 1 / (1 \u2212 p) frames)."}, {"type": "code", "source": "T = np.zeros((K, K))\nfor a in animals:\n    lab = LABELS[a['id']]\n    change = np.flatnonzero(np.diff(lab) != 0)\n    for i in change:\n        T[lab[i] - 1, lab[i + 1] - 1] += 1\nTn = np.divide(T, T.sum(axis=1, keepdims=True), out=np.zeros_like(T), where=T.sum(axis=1, keepdims=True) > 0)\nM = np.array(model['transition_matrix'])\nfig, axes = plt.subplots(1, 2, figsize=(10, 4))\nfor ax, mat, title in [(axes[0], Tn, 'Bout-to-bout transitions'), (axes[1], M, 'Model transition matrix (per frame)')]:\n    im = ax.imshow(mat, cmap='Greys', vmin=0, vmax=max(mat.max(), 1e-9))\n    ax.set_xticks(range(K)); ax.set_xticklabels(STATE_NAMES, rotation=90); ax.set_yticks(range(K)); ax.set_yticklabels(STATE_NAMES)\n    ax.set_xlabel('to'); ax.set_ylabel('from'); ax.set_title(title)\n    if K <= 10:\n        for i in range(K):\n            for j in range(K):\n                if mat[i, j] >= 0.05:\n                    ax.text(j, i, f'{mat[i, j]:.2f}', ha='center', va='center', fontsize=7,\n                            color='white' if mat[i, j] > 0.5 * mat.max() else 'black')\n    plt.colorbar(im, ax=ax, fraction=0.046)\nplt.tight_layout(); plt.show()\nself_p = np.diag(M)\npd.DataFrame({'stay probability': self_p, 'expected bout (s)': 1 / np.maximum(1 - self_p, 1e-9) / fps,\n              'most common next state': [STATE_NAMES[int(np.argmax(Tn[i]))] if Tn[i].sum() else '\u2013' for i in range(K)]},\n             index=STATE_NAMES)"}, {"type": "markdown", "source": "## 7. The feature space\nHow much variance each principal component carries, and which body parts drive them. Node\nimportance sums each node's squared loadings over its axes and the kept PCs, weighted by each PC's\nshare of the variance."}, {"type": "code", "source": "evr = np.array(red['explained_variance_ratio'])\nnpc = red['n_components'] if red['method'] == 'pca' else len(red.get('loadings', []))\nnames = feat.get('feature_names', [])\nL = np.array(red.get('loadings', []))\nfig, axes = plt.subplots(1, 2, figsize=(10, 3.2))\nshown = min(len(evr), max(npc + 3, 8))\naxes[0].bar(range(1, shown + 1), evr[:shown] * 100, color=['#8fb5a8' if i < npc else '#c8c8c8' for i in range(shown)])\naxes[0].plot(range(1, shown + 1), np.cumsum(evr[:shown]) * 100, '-o', color='black', ms=3)\naxes[0].set_xlabel('PC'); axes[0].set_ylabel('% variance'); axes[0].set_title('Variance explained (kept PCs in green)')\nif len(L) and names:\n    w = evr[:len(L)][:, None]\n    contrib = (L ** 2 * w).sum(axis=0)\n    node_imp = {}\n    for nm, v in zip(names, contrib):\n        who, node, _ = nm.split('/')\n        key = node if who == 'own' else f'{node} (other)'\n        node_imp[key] = node_imp.get(key, 0) + v\n    s = pd.Series(node_imp).sort_values(ascending=True)\n    s = s / s.sum() * 100\n    s.tail(15).plot.barh(ax=axes[1], color='#8fb5a8')\n    axes[1].set_xlabel('% of weighted loading'); axes[1].set_title('Node importance in the kept PCs')\nplt.tight_layout(); plt.show()\nif len(L) and names:\n    top = {}\n    for i in range(min(3, len(L))):\n        order = np.argsort(-np.abs(L[i]))[:6]\n        top[f'PC{i + 1} ({evr[i] * 100:.0f}%)'] = [f\"{names[j]} ({L[i, j]:+.2f})\" for j in order]\n    display(pd.DataFrame(top))"}, {"type": "markdown", "source": "## 8. States in PC space\nEach frame in the first two PCs, colored by state, then one panel per state with its flow field\n(the step the state's linear dynamics predicts from each point, other PCs held at the state's mean)\nand its longest bouts. \u2297 marks the field's fixed point, where its trajectories converge or circle."}, {"type": "code", "source": "emb = {a['id']: np.asarray(a['embedding'], float) for a in animals}\nallE = np.vstack(list(emb.values()))\nallL = np.concatenate([LABELS[a['id']] for a in animals])\nfig, ax = plt.subplots(figsize=(6, 4.5))\nax.scatter(allE[:, 0], allE[:, 1] if allE.shape[1] > 1 else np.zeros(len(allE)), c=allL - 1, cmap=CMAP,\n           vmin=-0.5, vmax=K - 0.5, s=4, alpha=0.7, linewidths=0)\nax.set_xlabel(f'PC1 ({evr[0] * 100:.0f}%)'); ax.set_ylabel(f'PC2 ({evr[1] * 100:.0f}%)' if len(evr) > 1 else '')\nax.set_title('Frames in PC space'); plt.show()\n\nhas_flow = all(s.get('A') is not None for s in states) and allE.shape[1] >= 2\ncols = 3 if K > 4 else 2\nrows_n = int(np.ceil(K / cols))\nfig, axes = plt.subplots(rows_n, cols, figsize=(3.4 * cols, 2.9 * rows_n), squeeze=False)\nx0, x1 = np.percentile(allE[:, 0], [0.5, 99.5]); y0, y1 = np.percentile(allE[:, 1], [0.5, 99.5])\npx, py = 0.08 * (x1 - x0), 0.08 * (y1 - y0)\nx0, x1, y0, y1 = x0 - px, x1 + px, y0 - py, y1 + py\ngx, gy = np.meshgrid(np.linspace(x0, x1, 11), np.linspace(y0, y1, 9))\nfor c in range(K):\n    ax = axes[c // cols][c % cols]\n    ax.scatter(allE[:, 0], allE[:, 1], s=1, color='#bbbbbb', alpha=0.35, linewidths=0)\n    members = allL == c + 1\n    if has_flow and members.any():\n        Am, bm = np.array(states[c]['A']), np.array(states[c]['b'])\n        mu = allE[members].mean(axis=0)\n        Z = np.tile(mu, (gx.size, 1)); Z[:, 0] = gx.ravel(); Z[:, 1] = gy.ravel()\n        V = Z @ Am.T + bm - Z\n        ax.quiver(gx.ravel(), gy.ravel(), V[:, 0], V[:, 1], color='#777777', angles='xy', width=0.004, alpha=0.8)\n        fp = states[c].get('fixed_point')\n        if fp is not None and x0 <= fp[0] <= x1 and y0 <= fp[1] <= y1:\n            ax.plot(fp[0], fp[1], marker='$\\\\otimes$', ms=11, color='black')\n    longest = sorted([b for a in animals for b in a['bouts'] if b['state'] == c + 1 and b['end'] > b['start']],\n                     key=lambda b: b['end'] - b['start'], reverse=True)[:15]\n    for a in animals:\n        for b in a['bouts']:\n            if b in longest:\n                seg = emb[a['id']][b['start']:b['end'] + 1]\n                ax.plot(seg[:, 0], seg[:, 1], color=COLORS[c], lw=1.2, alpha=0.9)\n                ax.plot(seg[0, 0], seg[0, 1], 'o', color=COLORS[c], ms=2.5)\n    ax.set_xlim(x0, x1); ax.set_ylim(y0, y1); ax.set_xticks([]); ax.set_yticks([])\n    ax.set_title(f\"{STATE_NAMES[c]} \u00b7 {share.iloc[c] * 100:.0f}% of time\", color=COLORS[c], fontsize=10)\nfor i in range(K, rows_n * cols):\n    axes[i // cols][i % cols].axis('off')\nif not has_flow:\n    fig.suptitle('Model fit on raw features: flow fields are not in PC space, bouts only', fontsize=9)\nplt.tight_layout(); plt.show()"}, {"type": "markdown", "source": "## 9. Behaviour in each state\nDistributions of the per-frame measures by state (boxes: quartiles; whiskers: 1.5 \u00d7 IQR), then the\nmedian of each measure per state, and the same as a z-score against all frames so states can be\ncompared at a glance."}, {"type": "code", "source": "nm = len(MEASURES)\ncols = 3\nrows_n = int(np.ceil(nm / cols))\nfig, axes = plt.subplots(rows_n, cols, figsize=(11, 2.6 * rows_n), squeeze=False)\nfor i, mname in enumerate(MEASURES):\n    ax = axes[i // cols][i % cols]\n    data = [df.loc[df.state == c, mname].values for c in range(1, K + 1)]\n    bp = boxplot(ax, data, STATE_NAMES, patch_artist=True, showfliers=False, medianprops=dict(color='black'))\n    for patch, c in zip(bp['boxes'], COLORS):\n        patch.set_facecolor(c); patch.set_alpha(0.75)\n    ax.set_title(f\"{mname.replace('_', ' ')} ({UNITS[mname]})\")\n    ax.tick_params(axis='x', labelsize=7, rotation=90 if K > 8 else 0)\nfor i in range(nm, rows_n * cols):\n    axes[i // cols][i % cols].axis('off')\nplt.tight_layout(); plt.show()\n\nmed = df.groupby('state')[MEASURES].median().reindex(range(1, K + 1))\nmed.index = STATE_NAMES\nz = (med - df[MEASURES].median()) / df[MEASURES].std().replace(0, np.nan)\nfig, ax = plt.subplots(figsize=(1.0 + 0.9 * nm, 0.4 * K + 1.2))\nim = ax.imshow(z.values, cmap='RdBu_r', vmin=-2, vmax=2, aspect='auto')\nax.set_xticks(range(nm)); ax.set_xticklabels([m.replace('_', ' ') for m in MEASURES], rotation=40, ha='right')\nax.set_yticks(range(K)); ax.set_yticklabels(STATE_NAMES)\nfor i in range(K):\n    for j in range(nm):\n        if np.isfinite(z.values[i, j]):\n            ax.text(j, i, f'{z.values[i, j]:+.1f}', ha='center', va='center', fontsize=7)\nplt.colorbar(im, ax=ax, fraction=0.046, label='median vs all frames (z)')\nax.set_title('How each state differs (median, z-scored)')\nplt.tight_layout(); plt.show()\nmed.round(2)"}, {"type": "markdown", "source": "## 10. Average pose in each state\nEvery frame expressed in the animal's own frame (centroid at the origin, body axis pointing right)\nand averaged per state. Top: seen from above. Bottom (3D data): seen from the side."}, {"type": "code", "source": "def egocentric(p):\n    cen = p.mean(axis=1, keepdims=True)\n    v = p[:, ANT, [0, 2]] - p[:, POST, [0, 2]]\n    th = np.arctan2(v[:, 1], v[:, 0])[:, None]\n    dx, dz = p[..., 0] - cen[..., 0], p[..., 2] - cen[..., 2]\n    fw = dx * np.cos(th) + dz * np.sin(th)\n    lat = -dx * np.sin(th) + dz * np.cos(th)\n    return np.stack([fw, lat, p[..., 1]], -1)            # forward, lateral, height\n\n\nEGO = np.concatenate([egocentric(P[a['id']]) for a in animals])\nviews = 2 if dims == 3 else 1\nfig, axes = plt.subplots(views, K, figsize=(1.9 * K + 0.5, 1.9 * views + 0.4), squeeze=False)\nlim = np.nanpercentile(np.abs(EGO[..., :2]), 99) * 1.1\nhlim = np.nanpercentile(EGO[..., 2], 99.5) * 1.1 if dims == 3 else 1\nfor c in range(K):\n    sel = allL == c + 1\n    for v in range(views):\n        ax = axes[v][c]\n        ax.set_aspect('equal'); ax.set_xticks([]); ax.set_yticks([])\n        for s in ax.spines.values():\n            s.set_visible(False)\n        if not sel.any():\n            continue\n        mp = EGO[sel].mean(axis=0)\n        yy = mp[:, 1] if v == 0 else mp[:, 2]\n        for i, j in bones:\n            ax.plot([mp[i, 0], mp[j, 0]], [yy[i], yy[j]], color=COLORS[c], lw=1.6)\n        ax.plot(mp[:, 0], yy, 'o', color=COLORS[c], ms=2)\n        ax.set_xlim(-lim, lim)\n        ax.set_ylim(-lim, lim) if v == 0 else ax.set_ylim(-0.1 * hlim, hlim)\n        if v == 0:\n            ax.set_title(STATE_NAMES[c], color=COLORS[c], fontsize=10)\naxes[0][0].set_ylabel('top view')\nif views == 2:\n    axes[1][0].set_ylabel('side view')\nplt.tight_layout(); plt.show()"}, {"type": "markdown", "source": "## 11. Summary\nA plain-language description of each state from the numbers above: its share of time, typical bout\nlength, what usually follows it, and the measures where its median is well above or below the\nmedian over all frames (|z| \u2265 0.5)."}, {"type": "code", "source": "lines = []\norder = np.argsort(-share.values)\nfor c in order:\n    nmz = STATE_NAMES[c]\n    zrow = z.loc[nmz]\n    hi = [m.replace('_', ' ') for m in MEASURES if np.isfinite(zrow[m]) and zrow[m] >= 0.5]\n    lo = [m.replace('_', ' ') for m in MEASURES if np.isfinite(zrow[m]) and zrow[m] <= -0.5]\n    desc = []\n    if hi:\n        desc.append('higher ' + ', '.join(hi))\n    if lo:\n        desc.append('lower ' + ', '.join(lo))\n    bt = bout_table.loc[nmz] if nmz in bout_table.index else None\n    nxt = STATE_NAMES[int(np.argmax(Tn[c]))] if Tn[c].sum() else None\n    txt = (f\"**{nmz}** \u2014 {share.iloc[c] * 100:.1f}% of time\"\n           + (f\", {int(bt['bouts'])} bouts, median {bt['median_s']:.2f} s\" if bt is not None else '')\n           + (f\"; {' and '.join(desc)} than average\" if desc else '; close to average on every measure')\n           + (f\"; usually followed by {nxt}\" if nxt else '') + '.')\n    lines.append(txt)\ndisplay(Markdown('\\n\\n'.join(lines)))"}, {"type": "markdown", "source": "## 12. Tables for further analysis\n`df` holds one row per animal per frame with its state and every measure; `bouts` one row per\nbout. Uncomment to save them next to this notebook."}, {"type": "code", "source": "# df.to_csv('per_frame.csv', index=False)\n# bouts.to_csv('bouts.csv', index=False)\nprint(f'df: {df.shape[0]} rows \u00d7 {df.shape[1]} columns; bouts: {len(bouts)} rows')"}]</script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
@@ -3138,6 +4068,22 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
       .forEach(([o, v, w]) => (w === 4 ? end.setUint32(o, v, true) : end.setUint16(o, v, true)));
     return new Blob([...parts, ...central, new Uint8Array(end.buffer)], { type: 'application/zip' });
   }
+  // jsPDF is only needed for the report, so it is fetched on the first PDF export.
+  const JSPDF_URL = 'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js';
+  let jsPDFLoading = null;
+  function loadJsPDF() {
+    if (window.jspdf && window.jspdf.jsPDF) return Promise.resolve(window.jspdf.jsPDF);
+    if (!jsPDFLoading) {
+      jsPDFLoading = new Promise((resolve, reject) => {
+        const s = document.createElement('script');
+        s.src = JSPDF_URL;
+        s.onload = () => (window.jspdf && window.jspdf.jsPDF ? resolve(window.jspdf.jsPDF) : reject(new Error('the PDF library did not initialise')));
+        s.onerror = () => reject(new Error('could not load the PDF library (jsPDF) from cdnjs; check the internet connection'));
+        document.head.appendChild(s);
+      }).catch((e) => { jsPDFLoading = null; throw e; });
+    }
+    return jsPDFLoading;
+  }
   async function runExport(kind) {
     const st = $('#ex-status');
     if (!S || !S.analysis || !S.analysis.km) { st.textContent = 'Run the clustering first.'; return; }
@@ -3145,6 +4091,13 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
     let name, data;
     try {
       if (kind === 'json') { name = `${base}_clusters.json`; data = JSON.stringify(clusterExport()); }
+      else if (kind === 'pdf') {
+        name = `${base}_report.pdf`;
+        st.textContent = 'Building the report…';
+        const jsPDF = await loadJsPDF();
+        await pause(20);   // let the status line paint before the synchronous build
+        data = EthoReport.build(dataset, clusterExport(), { jsPDF }).output('blob');
+      }
       else if (kind === 'csv') { name = `${base}_labels.csv`; data = labelsCSV(); }
       else {
         name = `${base}_analysis.zip`;
@@ -3167,6 +4120,7 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
   $('#ex-json').addEventListener('click', () => runExport('json'));
   $('#ex-csv').addEventListener('click', () => runExport('csv'));
   $('#ex-nb').addEventListener('click', () => runExport('nb'));
+  $('#ex-pdf').addEventListener('click', () => runExport('pdf'));
 
   // ---------- cluster prototypes ----------
   // Real behaviour per cluster, no reconstruction: the bouts nearest the cluster's centre in PC space
