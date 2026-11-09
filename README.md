@@ -67,8 +67,8 @@ repo
  └──────────┬───────────┘
             ▼   (social only)
  ┌──────────────────────┐   every other animal in the focal frame,
- │ 5  social block      │   nearest first, rotated onto the body axis,
- │                      │   × w(d) = exp(−½ (d/d₀)²),  d = centroid distance in 2D or 3D
+ │ 5  social block      │   nearest first, as they are in the focal frame,
+ │                      │   × w = Gaussian field: reach d₀ ahead/behind, ρ·d₀ to the sides
  └──────────┬───────────┘
             ▼
  ┌──────────────────────┐   rows = animal × frame, columns = features
@@ -247,7 +247,7 @@ bends, and the up values change when the animal rears or climbs. 2D data has
 ## 5. Social features (the "social" feature set)
 
 The social set takes the focal animal's own 9 numbers and appends a block for **every other
-animal**, measured in the **focal animal's frame**. Three steps shape each block.
+animal**, measured in the **focal animal's frame**. Two steps shape each block.
 
 ```
   per frame, per focal animal:
@@ -257,76 +257,81 @@ animal**, measured in the **focal animal's frame**. Three steps shape each block
                        │
           ┌────────────┴──────────────────────────────────────────────┐
           │ a) every joint of that animal → focal frame (same formulas)│
-          │ b) rotate about the focal centroid onto the body axis      │
-          │ c) multiply the whole block by w(d) = exp(−½ (d/d₀)²)      │
+          │ b) multiply the whole block by the proximity weight w      │
           └────────────────────────────────────────────────────────────┘
 ```
 
 **a) Nearest first.** The other animals are sorted by centroid distance in each frame. Slot
 `other1` always holds the nearest animal, so a column means the same thing ("the closest
-neighbour's snout") for every animal and every frame, whoever that neighbour is.
+neighbour's snout") for every animal and every frame, whoever that neighbour is. Each other animal
+is kept exactly where it is in the focal frame, so its distance, which side it is on (left or
+right), front or behind, and its posture and orientation are all in the features.
 
-**b) Rotation onto the body axis** (optional, on by default). The other animal's direction from
-the focal centroid is its **bearing** φ. Every joint of the other animal is rotated about the
-focal centroid by the smallest angle that puts it on the forward axis. An animal in front stays
-in front, one behind stays behind (φ is wrapped into (−90°, 90°]), and the distance is unchanged.
-This throws away only **which side** (left or right) the other animal is on. That is usually
-irrelevant, and keeping it would split one behaviour into mirrored copies. What remains is the
-distance, front or behind, and the other animal's posture and orientation relative to the line
-between the two.
-
-**c) Proximity weight.** The whole block is multiplied by an **isotropic Gaussian centred on the
-focal centroid and read at the other animal's centroid**:
+**b) Proximity weight.** The whole block is multiplied by an **elliptical Gaussian field centred on
+the focal centroid and read at the other animal's centroid**, in the focal frame:
 
 ```
- w(d) = exp( −½ (d / d₀)² )
+ w = exp( −½ [ (Δforward² + Δh²) / d₀²  +  Δlateral² / (ρ·d₀)² ] )
 
- d  = centroid-to-centroid distance in that frame
-      3D:  d = √(Δx² + Δz² + Δh²)   (Δh = difference in mean height; default for 3D data)
-      2D:  d = √(Δx² + Δz²)         (floor only; the only option for 2D data)
- d₀ = width, in body lengths (nose-to-tail extent of animal 1 in frame 1), the same on every axis
+ Δforward, Δlateral = the other centroid's offset along and across the focal body axis
+ Δh = difference in mean height (3D distance, the default for 3D data; 0 with 2D distance)
+ d₀ = reach ahead and behind, in body lengths (nose-to-tail extent of animal 1 in frame 1)
+ ρ  = side reach, 0.1–1 (default 0.5): the field reaches ρ·d₀ to the sides
 ```
 
-A distant animal shrinks toward 0, which reads as "nobody nearby". It doesn't leave sharp
-patterns in the features that don't mean anything. The same distance (2D or 3D) is used for the
-nearest-first ordering. The 3D distance separates an animal on a block above the focal animal
-from one beside it on the floor.
+An animal in front of or behind the focal one counts more than one at the same distance beside it,
+and the weight changes smoothly as it moves around the focal animal. A distant animal shrinks
+toward 0, which reads as "nobody nearby", without leaving sharp patterns in the features that don't
+mean anything. With ρ = 1 the field is the isotropic Gaussian exp(−½ (d/d₀)²) on the centroid
+distance d. The 3D distance separates an animal on a block above the focal animal from one beside
+it on the floor; the same distance (2D or 3D) sets the nearest-first order.
 
-![Egocentric transform and social alignment on the toy scene](docs/figures/1_egocentric_social.png)
+Earlier versions instead rotated each other animal onto the focal body axis (in front or behind),
+which dropped left and right. An animal beside the focal one then sat on the boundary and flipped
+between front and behind from frame to frame, and in the `mouse_social` example every one-frame
+bout fell on such a flip. The elliptical field replaces it: front and behind get their extra weight
+smoothly, with nothing to flip. Left and right stay distinct, so a behaviour can come out as a
+mirror-image pair of states.
+
+![Egocentric transform and proximity field on the toy scene](docs/figures/1_egocentric_social.png)
 
 *Left: the toy scene from above. Middle: the same scene in the focal animal's frame. Right: each
-other animal rotated onto the focal body axis (dashed), then scaled by its weight (solid). "other"
-is in front, "third" is behind.*
+other animal in the focal frame (dashed) and scaled by its weight (solid); dotted: where the
+elliptical field falls to w = 0.5. "other" is in front and to one side, "third" is beside the
+focal animal on a block.*
 
-Toy example (body length 11 cm, d₀ = 1 body):
+Toy example (body length 11 cm, d₀ = 1 body, ρ = 0.5, 3D distance):
 
-| slot | animal | d (2D) | d (3D) | w (2D) | w (3D) | bearing φ | rotation | side |
+| slot | animal | d (2D) | d (3D) | Δforward | Δlateral | Δh | w (isotropic) | w (ρ = 0.5) |
 |---|---|---|---|---|---|---|---|---|
-| other1 | other | 5.75 | 5.75 | 0.872 | 0.872 | −57.8° | +57.8° | in front |
-| other2 | third (on a block) | 12.81 | **13.28** | 0.507 | **0.482** | 92.7° | +87.3° | behind |
+| other1 | other | 5.75 | 5.75 | 3.07 | −4.87 | 0.07 | 0.872 | **0.650** |
+| other2 | third (on a block) | 12.81 | **13.28** | −0.60 | 12.80 | 3.50 | 0.482 | **0.063** |
 
-The third mouse's 3.5 cm of extra height makes it farther away in 3D, so its weight is lower.
-Its bearing is 92.7°, past 90°, so it is rotated onto the *rear* of the axis.
+The third mouse is almost exactly beside the focal one, 12.8 cm to the side, and its 3.5 cm of
+extra height adds to the distance. A round field would still give it half weight (0.48). The
+elliptical field reaches only 5.5 cm to the sides, so it counts for almost nothing (0.06). The
+"other" mouse is in front but also off to the side, so it keeps most of its weight (0.65).
 
 The "other" animal's block, joint by joint, as (forward, up, lateral):
 
-| joint | in the focal frame | rotated onto the axis | × w = 0.872 (final features) |
-|---|---|---|---|
-| pelvis | (4.67, 1.5, −7.00) | (8.41, 1.5, 0.22) | (7.34, 1.31, 0.19) |
-| neck | (2.87, 2.0, −4.60) | (5.42, 2.0, −0.03) | (4.73, 1.74, −0.02) |
-| snout | (1.67, 1.2, −3.00) | (3.43, 1.2, −0.19) | (2.99, 1.05, −0.17) |
+| joint | in the focal frame | × w = 0.650 (final features) |
+|---|---|---|
+| pelvis | (4.67, 1.5, −7.00) | (3.03, 0.98, −4.55) |
+| neck | (2.87, 2.0, −4.60) | (1.86, 1.30, −2.99) |
+| snout | (1.67, 1.2, −3.00) | (1.08, 0.78, −1.95) |
 
-After the rotation, the other animal lies along the focal axis with its snout 3.4 cm ahead of the
-focal centroid, facing back toward it. This is the signature of an approach.
+Its snout is ahead of the focal centroid and its pelvis farther out, so it faces back toward the
+focal animal from in front and to one side: the signature of an approach.
 
-![The proximity kernel](docs/figures/2_proximity_kernel.png)
+![The proximity field](docs/figures/2_proximity_kernel.png)
 
-*Left: the weight against distance, with the two toy animals marked (hollow = 2D, filled = 3D).
-Right: the kernel is isotropic, with the same width along the floor and in height.*
+*Left: the weight against distance straight ahead or behind (solid; height uses the same reach) and
+straight to the side (dashed). Right: the field in the focal frame seen from above, with the two
+toy animals marked.*
 
-In the viewer the Weights panel shows these settings live. It draws the w(d) curve over a
-histogram of this clip's distances, gives the share of animal pairs × frames with weight > 0.5,
-and gives the share of input variance from the animal's own pose versus the others.
+In the viewer the Weights panel shows these settings live. It draws the weight curve over a
+histogram of this clip's distances (ahead/behind, and dashed to the side when ρ < 1). It also
+gives the share of animal pairs × frames with weight > 0.5, and the share of input variance from the animal's own pose versus the others.
 
 ---
 
@@ -561,10 +566,10 @@ with the other animals in grey for social runs. These are real frames, not recon
 |---|---|---|---|
 | Feature set | Clustering → Input features | Ego | Ego = own pose only; Social adds every other animal |
 | Nodes | Weights | all on | unticked nodes are dropped from every block |
-| Rotate other animals onto the axis | Weights (social) | on | drops left/right of the other animal, keeps distance and front/behind |
 | Proximity weighting | Weights (social) | on | multiply each other-animal block by w(d) |
 | Distance | Weights (social, 3D data) | 3D | centroid distance with height (3D) or on the floor (2D); used for w(d) and ordering |
-| d₀ | Weights (social) | 1 body length | width of the Gaussian, the same along every axis |
+| d₀ | Weights (social) | 1 body length | reach of the Gaussian field ahead and behind (and in height) |
+| Side reach ρ | Weights (social) | 0.5 | reach to the sides as a fraction of d₀; 1 = isotropic |
 | Reduction | Clustering | PCA, 95% variance | or None: dynamics on raw features |
 | k from / to | Clustering | 2 / 15 | range searched; lowest BIC wins |
 | Stickiness | Clustering | 0.1 | self-transition pseudo-count, as a fraction of transitions per state |

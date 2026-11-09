@@ -44,8 +44,8 @@ origin, body axis forward).
 | `removed_nodes` | `[string]` | nodes excluded from the analysis (their columns are zero) |
 | `axes` | `[string]` | per-joint coordinates: `forward, up, lateral` (3D) or `forward, lateral` (2D) |
 | `egocentric_axis` | object | `anterior`, `posterior`: the nodes defining the body axis |
-| `align_others` | bool | social: each other animal rotated about the focal centroid onto the body axis (in front or behind) |
-| `proximity_kernel` | object \| null | social: `{type: "gaussian", d0, d0_body_lengths, dims, distance}`; each other animal scaled by exp(−½ (d/d0)²), an isotropic Gaussian centred on the focal centroid, where d is the centroid-to-centroid distance in `dims` (3: x, height, z; 2: the floor) dimensions |
+| `align_others` | bool, optional | **older files only.** `true`: each other animal was rotated about the focal centroid onto the body axis (in front or behind). The viewer no longer offers this (an animal beside the focal one flipped between front and behind); absent means no rotation |
+| `proximity_kernel` | object \| null | social: `{type: "gaussian", d0, d0_body_lengths, lateral_scale, dims, distance}`; each other animal scaled by w = exp(−½ [(f² + h²)/d0² + l²/(lateral_scale·d0)²]), a Gaussian field centred on the focal centroid, where f, l are the other centroid's offset along and across the focal body axis and h their height difference (only when `dims` is 3). `lateral_scale` 1 (or absent, older files) is the isotropic exp(−½ (d/d0)²) on the centroid distance d |
 | `distance_dims` | 2 \| 3 | social: dimensions of the centroid distance used for the kernel and for ordering other animals nearest-first |
 | `body_length` | number | the length unit `d0_body_lengths` refers to |
 | `feature_names` | `[string]` | one per feature column: `own/<node>/<axis>` or `other<i>/<node>/<axis>` |

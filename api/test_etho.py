@@ -105,6 +105,43 @@ def test_tables_and_clusters_export():
     assert [b['state'] for b in out['animals'][0]['bouts']] == [b['state'] for b in CLUSTERS['animals'][0]['bouts']]
 
 
+def _other_block_weight(feat):
+    """Per-row weight of the other-animal block: weighted features / unweighted features."""
+    nodes = feat['nodes']
+    _, P = etho._tracks(POSE, 0, nodes, 'm')
+    X = etho._features(P, feat, 3)
+    X1 = etho._features(P, dict(feat, proximity_kernel=None), 3)
+    d = X.shape[1] // 2
+    big = np.abs(X1[:, d:]).argmax(1)                  # the largest unweighted entry of each row
+    rows = np.arange(len(X))
+    return X[rows, d + big] / X1[rows, d + big], P
+
+
+def test_elliptical_field():
+    base = dict(CLUSTERS['features'], align_others=False)
+    k = dict(base['proximity_kernel'])
+    nodes = base['nodes']
+    ant, post = nodes.index('neck'), nodes.index('pelvis')
+    for side, dist_dims in [(0.5, 2), (0.3, 3), (1.0, 3)]:
+        feat = dict(base, distance_dims=dist_dims, proximity_kernel=dict(k, lateral_scale=side, dims=dist_dims))
+        w, P = _other_block_weight(feat)
+        cen = P.mean(axis=2)
+        th = np.arctan2(P[:, :, ant, 2] - P[:, :, post, 2], P[:, :, ant, 0] - P[:, :, post, 0])
+        expect = []
+        for a in range(2):
+            off = cen[1 - a] - cen[a]
+            fw = off[:, 0] * np.cos(th[a]) + off[:, 2] * np.sin(th[a])
+            lat = -off[:, 0] * np.sin(th[a]) + off[:, 2] * np.cos(th[a])
+            dh = off[:, 1] if dist_dims == 3 else 0
+            expect.append(np.exp(-0.5 * ((fw ** 2 + dh ** 2) / k['d0'] ** 2 + lat ** 2 / (side * k['d0']) ** 2)))
+        assert np.allclose(w, np.concatenate(expect), atol=1e-9), side
+    # side reach 1 with 2D distance is the old isotropic kernel, and the default for older files
+    old = dict(base, proximity_kernel={x: v for x, v in k.items() if x != 'lateral_scale'})
+    new = dict(base, distance_dims=2, proximity_kernel=dict(k, lateral_scale=1.0, dims=2))
+    _, P = etho._tracks(POSE, 0, nodes, 'm')
+    assert np.array_equal(etho._features(P, old, 3), etho._features(P, new, 3))
+
+
 def test_analysis_notebook_runs_on_applied_result():
     # the result file is a normal etho-clusters export: the viewer's analysis notebook reads it
     r = MODEL.apply(POSE)

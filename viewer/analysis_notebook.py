@@ -179,10 +179,14 @@ info = {
     'egocentric axis': f"{axis_info.get('posterior')} → {axis_info.get('anterior')}",
 }
 if feat['mode'] == 'social':
-    info['other animals rotated onto the body axis'] = feat.get('align_others')
+    if feat.get('align_others'):                       # an option of older viewer versions
+        info['other animals rotated onto the body axis'] = True
     k = feat.get('proximity_kernel')
-    info['proximity kernel'] = (f"{'isotropic %dD ' % k['dims'] if k.get('dims') else ''}Gaussian on centroid-to-centroid distance, d0 = {k['d0_body_lengths']} body lengths ({k['d0'] * TO_DISPLAY:.1f} {LEN})"
-                                if k else 'off')
+    side = k.get('lateral_scale', 1) if k else 1
+    info['proximity kernel'] = ('off' if not k else
+                                f"elliptical Gaussian field: d0 = {k['d0_body_lengths']} body lengths ({k['d0'] * TO_DISPLAY:.1f} {LEN}) ahead and behind, "
+                                f"{side * k['d0_body_lengths']:.2f} to the sides" if side < 1 else
+                                f"{'isotropic %dD ' % k['dims'] if k.get('dims') else ''}Gaussian on centroid-to-centroid distance, d0 = {k['d0_body_lengths']} body lengths ({k['d0'] * TO_DISPLAY:.1f} {LEN})")
 info['reduction'] = (f"PCA, {red['n_components']} PCs = {100 * red['cumulative_variance'][red['n_components'] - 1]:.1f}% of variance"
                      if red['method'] == 'pca' else f"none (model on {red['n_components']} raw features)")
 info['model'] = f"switching linear dynamics, k = {model['k']} (best by BIC: k = {model['k_auto']})"

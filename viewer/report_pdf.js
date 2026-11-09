@@ -588,9 +588,12 @@
       ['Egocentric axis', `${R.axisInfo.posterior} -> ${R.axisInfo.anterior}`],
     ];
     if (feat.mode === 'social') {
-      info.push(['Other animals rotated onto the body axis', feat.align_others ? 'yes' : 'no']);
+      if (feat.align_others) info.push(['Other animals rotated onto the body axis (older option)', 'yes']);
       const k = feat.proximity_kernel;
-      info.push(['Proximity kernel', k ? `${k.dims ? `isotropic ${k.dims}D ` : ''}Gaussian on centroid-to-centroid distance, d0 = ${k.d0_body_lengths} body lengths (${(k.d0 * R.TO_DISPLAY).toFixed(1)} ${LEN})` : 'off']);
+      const side = k && k.lateral_scale != null && k.lateral_scale < 1 ? k.lateral_scale : 1;
+      info.push(['Proximity kernel', !k ? 'off' : side < 1
+        ? `elliptical Gaussian field: d0 = ${k.d0_body_lengths} body lengths (${(k.d0 * R.TO_DISPLAY).toFixed(1)} ${LEN}) ahead and behind, ${+(side * k.d0_body_lengths).toFixed(2)} to the sides${k.dims ? `, ${k.dims}D` : ''}`
+        : `${k.dims ? `isotropic ${k.dims}D ` : ''}Gaussian on centroid-to-centroid distance, d0 = ${k.d0_body_lengths} body lengths (${(k.d0 * R.TO_DISPLAY).toFixed(1)} ${LEN})`]);
     }
     info.push(['Reduction', red.method === 'pca' ? `PCA, ${red.n_components} PCs = ${pct(red.cumulative_variance[red.n_components - 1])} of variance` : `none (model on ${red.n_components} raw features)`]);
     info.push(['Model', `switching linear dynamics, k = ${R.model.k} (best by BIC: k = ${R.model.k_auto})`]);

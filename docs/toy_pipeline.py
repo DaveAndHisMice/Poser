@@ -7,7 +7,7 @@ docs/figures/ is drawn by it. The maths mirrors viewer/viewer_template.html:
   1. gap filling            fillGaps()
   2. centroid and heading   prepare(), egocentricFeatures()
   3. egocentric pose        egocentricFeatures()
-  4. social block           buildFeatures()  (rotation onto the axis, nearest-first, Gaussian kernel)
+  4. social block           buildFeatures()  (nearest-first, elliptical Gaussian proximity field)
   5. PCA                    runPCA()          (keep the PCs reaching 95% of the variance)
   6. switching linear       arhmm()           (EM: forward-backward + weighted least squares,
      dynamics + BIC                            sticky transitions, Viterbi labels, BIC over k)
@@ -106,45 +106,39 @@ print("feature vector (own block, 9 numbers):", E.reshape(-1))
 h("STEP 4  social block: other animals in the focal frame")
 
 
-def bearing(cb, c, th):
+def offset(cb, hb, c, hc, th):
+    """The other centroid in the focal frame: (forward, lateral, height difference)."""
     bx, bz = cb[0] - c[0], cb[2] - c[2]
     cs, sn = np.cos(th), np.sin(th)
-    return np.arctan2(-bx * sn + bz * cs, bx * cs + bz * sn)
+    return bx * cs + bz * sn, -bx * sn + bz * cs, hb - hc
 
 
-def wrap_front_back(phi):
-    """Smallest rotation that puts the other animal on the body axis, in front or behind: (-90, 90]."""
-    if phi > np.pi / 2:
-        return phi - np.pi
-    if phi <= -np.pi / 2:
-        return phi + np.pi
-    return phi
+def field(fw, lat, dh, rho):
+    """Proximity weight: d0 ahead/behind and in height, rho * d0 to the sides (rho = 1: isotropic)."""
+    return np.exp(-0.5 * ((fw ** 2 + dh ** 2) / D0 ** 2 + lat ** 2 / (rho * D0) ** 2))
 
 
 BODY = 11.0           # body length (nose-to-tail extent), cm, for d0 in body lengths
 D0 = 1.0 * BODY
+RHO = 0.5             # side reach: the field reaches RHO * D0 to the sides
 rows = []
 for name in ("other", "third"):
     P = ANIMALS[name]
     cb, hb = centroid(P)
     d2 = np.hypot(cb[0] - cF[0], cb[2] - cF[2])
     d3 = np.sqrt(d2 ** 2 + (hb - hF) ** 2)
-    phi = bearing(cb, cF, thF)
-    rows.append((name, P, cb, d2, d3, phi))
+    fw, lat, dh = offset(cb, hb, cF, hF, thF)
+    rows.append((name, P, cb, d2, d3, (fw, lat, dh)))
 rows.sort(key=lambda r: r[4])           # nearest-first by the 3D distance
-for slot, (name, P, cb, d2, d3, phi) in enumerate(rows, 1):
-    w2, w3 = np.exp(-0.5 * (d2 / D0) ** 2), np.exp(-0.5 * (d3 / D0) ** 2)
-    rot = wrap_front_back(phi)
-    print(f"slot other{slot} = {name}: d_2D {d2:.2f}  d_3D {d3:.2f}  w_2D {w2:.3f}  w_3D {w3:.3f}  "
-          f"bearing {np.degrees(phi):.1f} deg -> rotate by {np.degrees(-rot):.1f} deg "
-          f"({'in front' if abs(phi) <= np.pi / 2 else 'behind'})")
-    Eo = ego(P, cF, thF)
-    cr, sr = np.cos(rot), np.sin(rot)
-    aligned = np.stack([Eo[:, 0] * cr + Eo[:, 2] * sr, Eo[:, 1], -Eo[:, 0] * sr + Eo[:, 2] * cr], -1)
-    for j, a, b in zip(JOINTS, Eo, aligned):
-        print(f"    {j:7s} focal frame {a}  rotated {b}  x w_3D {b * w3}")
+for slot, (name, P, cb, d2, d3, (fw, lat, dh)) in enumerate(rows, 1):
+    w_iso, w = field(fw, lat, dh, 1.0), field(fw, lat, dh, RHO)
+    print(f"slot other{slot} = {name}: d_2D {d2:.2f}  d_3D {d3:.2f}  offset forward {fw:.2f}  lateral {lat:.2f}  "
+          f"height {dh:.2f}  ({'in front' if fw > 0 else 'behind'}, {'left' if lat > 0 else 'right'})  "
+          f"w isotropic {w_iso:.3f}  w elliptical (rho {RHO}) {w:.3f}")
+    for j, a in zip(JOINTS, ego(P, cF, thF)):
+        print(f"    {j:7s} focal frame {a}  x w {a * w}")
 
-# figure: egocentric transform and social alignment
+# figure: egocentric transform and the proximity field
 fig, ax = plt.subplots(1, 3, figsize=(11, 3.8), gridspec_kw={"width_ratios": [1, 0.8, 1.3]})
 
 
@@ -169,37 +163,38 @@ ax[1].axhline(0, color=C_MUTED, lw=0.6); ax[1].axvline(0, color=C_MUTED, lw=0.6)
 ax[1].set_title("2  focal frame\ncentroid at 0")
 ax[1].set_xlabel("forward"); ax[1].set_ylabel("lateral"); ax[1].set_aspect("equal")
 draw(ax[2], Ef[:, [0, 2]], C_FOCAL, "focal")
-for name, P, cb, d2, d3, phi in rows:
-    rot = wrap_front_back(phi)
-    Eo = ego(P, cF, thF)
-    cr, sr = np.cos(rot), np.sin(rot)
-    al = np.stack([Eo[:, 0] * cr + Eo[:, 2] * sr, -Eo[:, 0] * sr + Eo[:, 2] * cr], -1)
-    w3 = np.exp(-0.5 * (d3 / D0) ** 2)
+tt = np.linspace(0, 2 * np.pi, 200)
+ax[2].fill(1.177 * D0 * np.cos(tt), 1.177 * RHO * D0 * np.sin(tt), color=C_FOCAL, alpha=0.08, lw=0)
+ax[2].plot(1.177 * D0 * np.cos(tt), 1.177 * RHO * D0 * np.sin(tt), ":", color=C_FOCAL, lw=1, label="w = 0.5")
+for name, P, cb, d2, d3, off in rows:
+    Eo = ego(P, cF, thF)[:, [0, 2]]
+    w = field(*off, RHO)
     col = C_OTHER if name == "other" else C_THIRD
-    draw(ax[2], al, col, name, ls="--")
-    draw(ax[2], al * w3, col, f"{name} × w = {w3:.2f}")
+    draw(ax[2], Eo, col, name, ls="--")
+    draw(ax[2], Eo * w, col, f"{name} × w = {w:.2f}")
 ax[2].axhline(0, color=C_MUTED, lw=0.6); ax[2].axvline(0, color=C_MUTED, lw=0.6)
-ax[2].set_title("3  onto the body axis (dashed)\n× proximity weight (solid)")
-ax[2].set_xlabel("forward"); ax[2].set_ylabel("lateral"); ax[2].set_ylim(-4, 4)
+ax[2].set_title(f"3  × proximity weight (solid)\nelliptical field, side reach {RHO} (dotted: w = 0.5)")
+ax[2].set_xlabel("forward"); ax[2].set_ylabel("lateral"); ax[2].set_aspect("equal")
 ax[2].legend(frameon=False, fontsize=6.5, loc="upper center", bbox_to_anchor=(0.5, -0.22), ncol=3)
 fig.savefig(FIG / "1_egocentric_social.png"); plt.close(fig)
 
-# figure: the kernel in 2D vs 3D
+# figure: the elliptical proximity field
 fig, ax = plt.subplots(1, 2, figsize=(8.4, 3.0))
 d = np.linspace(0, 3 * D0, 200)
-ax[0].plot(d / BODY, np.exp(-0.5 * (d / D0) ** 2), color=C_FOCAL, lw=2)
-for name, P, cb, d2, d3, phi in rows:
-    col = C_OTHER if name == "other" else C_THIRD
-    ax[0].plot(d2 / BODY, np.exp(-0.5 * (d2 / D0) ** 2), "o", mfc="white", color=col, label=f"{name}, 2D")
-    ax[0].plot(d3 / BODY, np.exp(-0.5 * (d3 / D0) ** 2), "o", color=col, label=f"{name}, 3D")
+ax[0].plot(d / BODY, np.exp(-0.5 * (d / D0) ** 2), color=C_FOCAL, lw=2, label="ahead / behind (and height)")
+ax[0].plot(d / BODY, np.exp(-0.5 * (d / (RHO * D0)) ** 2), "--", color=C_FOCAL, lw=2, label=f"to the side (reach {RHO} d₀)")
 ax[0].axvline(1, color=C_MUTED, lw=0.6, ls=":")
-ax[0].set_xlabel("centroid-to-centroid distance (body lengths)"); ax[0].set_ylabel("weight w(d)")
-ax[0].set_title("w(d) = exp(-½ (d/d₀)²),  d₀ = 1 body"); ax[0].legend(frameon=False, fontsize=7)
+ax[0].set_xlabel("distance from the focal centroid (body lengths)"); ax[0].set_ylabel("weight w")
+ax[0].set_title(f"d₀ = 1 body, side reach ρ = {RHO}"); ax[0].legend(frameon=False, fontsize=7)
 g = np.linspace(-2.2 * D0, 2.2 * D0, 161)
 X, Y = np.meshgrid(g, g)
-ax[1].contourf(X / BODY, Y / BODY, np.exp(-0.5 * (X ** 2 + Y ** 2) / D0 ** 2), levels=12, cmap="Greens")
-ax[1].set_aspect("equal"); ax[1].set_xlabel("Δx or Δfloor (body lengths)"); ax[1].set_ylabel("Δheight (body lengths)")
-ax[1].set_title("isotropic: same width along every axis\n(3D adds height; 2D ignores it)")
+ax[1].contourf(X / BODY, Y / BODY, field(X, Y, 0, RHO), levels=12, cmap="Greens")
+for name, P, cb, d2, d3, (fw, lat, dh) in rows:
+    col = C_OTHER if name == "other" else C_THIRD
+    ax[1].plot(fw / BODY, lat / BODY, "o", color=col, mec="white", label=f"{name}: w = {field(fw, lat, dh, RHO):.2f}")
+ax[1].set_aspect("equal"); ax[1].set_xlabel("forward (body lengths)"); ax[1].set_ylabel("lateral (body lengths)")
+ax[1].set_title("the field in the focal frame, seen from above")
+ax[1].legend(frameon=False, fontsize=7, loc="lower right")
 fig.savefig(FIG / "2_proximity_kernel.png"); plt.close(fig)
 
 # ---------------------------------------------------------------- steps 5-6: dynamics toy

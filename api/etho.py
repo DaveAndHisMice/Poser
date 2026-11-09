@@ -1,7 +1,7 @@
 """etho: apply a behaviour clustering made in the Pose Dataset Viewer to new pose data.
 
 The viewer's "Export script" saves a clustering run as an etho-model file: the feature settings
-(ego or social, removed nodes, body axis, alignment, proximity kernel), the PCA (mean and loadings)
+(ego or social, removed nodes, body axis, proximity field), the PCA (mean and loadings)
 and the switching linear dynamics model (each state's flow field and noise, the transition matrix).
 This module rebuilds the same features from any etho-pose dataset with the same skeleton, projects
 them onto the same principal components and segments them with the same model (Viterbi), so a state
@@ -134,8 +134,9 @@ def _features(P, feat, dims):
     A, nF, J, _ = P.shape
     nodes = feat['nodes']
     ant, post = nodes.index(feat['egocentric_axis']['anterior']), nodes.index(feat['egocentric_axis']['posterior'])
-    cen = P.mean(axis=2)                                           # centroid of every node, on the floor
-    cen[..., 1] = 0.0
+    cen = P.mean(axis=2)                                           # centroid of every node
+    height = cen[..., 1].copy() if dims == 3 else np.zeros((A, nF))
+    cen[..., 1] = 0.0                                              # ... on the floor
     th = np.arctan2(P[:, :, ant, 2] - P[:, :, post, 2], P[:, :, ant, 0] - P[:, :, post, 0])
     cs, sn = np.cos(th), np.sin(th)                                # animals x frames
 
@@ -156,25 +157,35 @@ def _features(P, feat, dims):
         raise ValueError('this model uses social features, which need at least two animals')
     blocks = A if social else 1
     kernel = feat.get('proximity_kernel') if social else None
+    # exports before these settings existed used floor distances and an isotropic kernel
+    d3 = dims == 3 and int(feat.get('distance_dims', 2)) == 3
+    side = float(kernel.get('lateral_scale', 1.0)) if kernel else 1.0
     X = np.zeros((A, nF, d * blocks))
     for a in range(A):
         X[a, :, :d] = in_frame(a, P[a])
         if not social:
             continue
         others = [b for b in range(A) if b != a]
-        dist = np.stack([np.hypot(cen[b, :, 0] - cen[a, :, 0], cen[b, :, 2] - cen[a, :, 2]) for b in others])
+        dh = np.stack([height[b] - height[a] if d3 else np.zeros(nF) for b in others])
+        dist = np.stack([np.sqrt((cen[b, :, 0] - cen[a, :, 0]) ** 2 + (cen[b, :, 2] - cen[a, :, 2]) ** 2 + dh[i] ** 2)
+                         for i, b in enumerate(others)])
         order = np.argsort(dist, axis=0, kind='stable')            # nearest other animal first, per frame
         for o in range(len(others)):
             pick = np.array(others)[order[o]]                       # which animal fills slot o in each frame
             Q = P[pick, np.arange(nF)]                              # frames x nodes x 3
-            dd = dist[order[o], np.arange(nF)]
+            bx, bz = cen[pick, np.arange(nF), 0] - cen[a, :, 0], cen[pick, np.arange(nF), 2] - cen[a, :, 2]
             rot = None
-            if feat.get('align_others'):
-                bx, bz = cen[pick, np.arange(nF), 0] - cen[a, :, 0], cen[pick, np.arange(nF), 2] - cen[a, :, 2]
+            if feat.get('align_others'):   # older exports: other animal rotated onto the body axis
                 phi = np.arctan2(-bx * sn[a] + bz * cs[a], bx * cs[a] + bz * sn[a])
                 phi = np.where(phi > np.pi / 2, phi - np.pi, np.where(phi <= -np.pi / 2, phi + np.pi, phi))
                 rot = (np.cos(phi), np.sin(phi))
-            w = np.exp(-0.5 * (dd / kernel['d0']) ** 2) if kernel else np.ones(nF)
+            if kernel:   # Gaussian field in the focal frame: d0 ahead/behind and in height, side * d0 sideways
+                fwc, latc = bx * cs[a] + bz * sn[a], -bx * sn[a] + bz * cs[a]
+                hh = dh[order[o], np.arange(nF)]
+                k0 = kernel['d0']
+                w = np.exp(-0.5 * ((fwc ** 2 + hh ** 2) / k0 ** 2 + latc ** 2 / (side * k0) ** 2))
+            else:
+                w = np.ones(nF)
             X[a, :, d * (o + 1):d * (o + 2)] = in_frame(a, Q, rot) * w[:, None]
     removed = set(feat.get('removed_nodes') or [])
     axes = 3 if dims == 3 else 2

@@ -208,6 +208,7 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
 #feat-diagram .fd-focal { stroke: var(--bone-left); fill: var(--bone-left); }
 #feat-diagram .fd-other { stroke: var(--accent-2); fill: var(--accent-2); }
 #feat-diagram .fd-axis { stroke: var(--accent); fill: none; stroke-width: 1.5; }
+#feat-diagram .fd-field { stroke: var(--accent); fill: var(--accent); fill-opacity: 0.06; stroke-width: 1; stroke-dasharray: 4 3; opacity: 0.7; }
 #feat-diagram .fd-link { stroke: var(--accent-2); fill: none; stroke-width: 1; stroke-dasharray: 3 3; opacity: 0.8; }
 #feat-diagram text { font: 500 11px var(--body); fill: var(--muted); }
 #feat-diagram text.fd-strong { fill: var(--ink); font-weight: 600; font-size: 12px; }
@@ -278,7 +279,6 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
         <details id="w-box" class="weights">
           <summary>Weights <span id="w-summary" class="muted"></span></summary>
           <div id="w-kernel" class="w-kernel" hidden>
-            <label class="check" for="k-align"><input type="checkbox" id="k-align" checked> Rotate other animals onto the body axis, in front or behind (drops left/right)</label>
             <label class="check" for="k-on"><input type="checkbox" id="k-on" checked> Proximity weighting of other animals (Gaussian)</label>
             <div class="field-row" id="k-dims-row">
               <label class="small" for="k-dims">Distance</label>
@@ -292,7 +292,12 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
               <input type="range" id="k-d0" min="0.2" max="4" step="0.05" value="1">
               <output id="k-d0-val" for="k-d0" class="mono"></output>
             </div>
-            <canvas id="k-curve" aria-label="Weight as a function of distance, with the distribution of distances in this clip"></canvas>
+            <div class="field-row">
+              <label class="small" for="k-side" title="Reach of the field to the sides, as a fraction of its reach ahead and behind. 1 = round (isotropic); below 1 = an ellipse along the body axis, so animals beside the focal one count less.">Side reach</label>
+              <input type="range" id="k-side" min="0.1" max="1" step="0.05" value="0.5">
+              <output id="k-side-val" for="k-side" class="mono"></output>
+            </div>
+            <canvas id="k-curve" aria-label="Weight as a function of distance straight ahead or behind, and straight to the side, with the distribution of distances in this clip"></canvas>
             <p id="k-stats" class="note"></p>
           </div>
           <div id="w-rows" class="w-grid"></div>
@@ -1951,12 +1956,15 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
   // Everything is a position in the dataset's length unit, so features stay in raw units.
   // ---------- weights ----------
   // Nodes can be removed (shared by every animal; for social features also removed from the other
-  // animals). The only scaling is a Gaussian proximity kernel on the other animals' coordinates:
-  // w(d) = exp(−½ (d/d₀)²), an isotropic Gaussian centred on the focal animal's centroid and read at
-  // the other animal's centroid. d is their distance in that frame in n dimensions: 3D (x, height, z)
-  // or 2D (the floor), d₀ in body lengths and the same along every axis. The same distance orders
-  // the other animals nearest-first.
-  const weights = { sig: '', on: [], kernelOn: true, d0Body: 1, align: true, dims: 3 };
+  // animals). The only scaling is a Gaussian proximity field on the other animals' coordinates,
+  // centred on the focal animal's centroid and read at the other animal's centroid, in the focal frame:
+  //   w = exp(−½ [ (forward² + Δheight²) / d₀² + lateral² / (ρ d₀)² ])
+  // d₀ is the reach ahead and behind (in body lengths), ρ ("side reach") shrinks it to the sides:
+  // ρ = 1 is the isotropic Gaussian exp(−½ (d/d₀)²); ρ < 1 an ellipse along the body axis, so an
+  // animal in front or behind counts more than one beside, smoothly (no snapping). Δheight counts
+  // only with 3D distances. Other animals are ordered nearest-first by plain centroid distance
+  // (3D with height, or 2D on the floor).
+  const weights = { sig: '', on: [], kernelOn: true, d0Body: 1, side: 0.5, dims: 3 };
   const distDims = () => (S.dims === 3 ? weights.dims : 2);
   function syncWeights() {
     const sig = S.animals[0].idx.map((i) => S.joints[i].base).join('|');
@@ -1971,8 +1979,7 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
     return {
       mode: social ? 'social' : 'ego',
       w: Float64Array.from(weights.on, (on) => (on ? 1 : 0)),
-      kernel: social && weights.kernelOn ? { d0: weights.d0Body * bodyLength(), d0Body: weights.d0Body, dims: distDims() } : null,
-      align: social && weights.align,
+      kernel: social && weights.kernelOn ? { d0: weights.d0Body * bodyLength(), d0Body: weights.d0Body, dims: distDims(), side: weights.side } : null,
       distDims: distDims(),
     };
   }
@@ -1986,8 +1993,7 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
     const off = [...cfg.w].filter((w) => w === 0).length;
     const parts = [];
     if (off) parts.push(`${off} node${off === 1 ? '' : 's'} removed`);
-    if (cfg.align) parts.push('others rotated onto axis');
-    if (cfg.kernel) parts.push(`proximity d₀ ${cfg.kernel.d0Body} body, ${cfg.kernel.dims}D`);
+    if (cfg.kernel) parts.push(`proximity d₀ ${cfg.kernel.d0Body} body, ${cfg.kernel.side < 1 ? `sides ×${cfg.kernel.side}, ` : ''}${cfg.kernel.dims}D`);
     return parts.join(', ');
   }
   function describeFeatures(cfg) {
@@ -2024,9 +2030,10 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
     if (J < 3) return;
     $('#w-kernel').hidden = !social;
     $('#k-on').checked = weights.kernelOn;
-    $('#k-align').checked = weights.align;
     $('#k-d0').value = String(weights.d0Body);
     $('#k-d0').disabled = !weights.kernelOn;
+    $('#k-side').value = String(weights.side);
+    $('#k-side').disabled = !weights.kernelOn;
     $('#k-dims-row').hidden = S.dims !== 3;
     $('#k-dims').value = String(weights.dims);
     const key = `${weights.sig}`;
@@ -2067,15 +2074,16 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
       $(`#w-${j}-on`).checked = on;
     });
     $('#k-d0-val').textContent = `${weights.d0Body.toFixed(2)} body = ${fmtLenShort(weights.d0Body * bodyLength())}`;
+    $('#k-side-val').textContent = weights.side >= 1 ? '1 (round)' : `${weights.side.toFixed(2)} × d₀ = ${fmtLenShort(weights.side * weights.d0Body * bodyLength())}`;
     $('#w-share').textContent = pv && social ? `Input variance: ${pct(pv.own)} own pose · ${pct(pv.others)} other animals` : '';
     if (social && pv && pv.kStats) {
       $('#k-stats').textContent = cfg.kernel
-        ? `Weight > 0.5 (closer than ${fmtLenShort(1.177 * cfg.kernel.d0)} in ${cfg.kernel.dims}D) in ${pct(pv.kStats.half)} of animal pairs × frames; mean weight ${pv.kStats.mean.toFixed(2)}.`
+        ? `Weight > 0.5 (closer than ${fmtLenShort(1.177 * cfg.kernel.d0)}${cfg.kernel.side < 1 ? ` ahead or behind, ${fmtLenShort(1.177 * cfg.kernel.side * cfg.kernel.d0)} to the side` : ` in ${cfg.kernel.dims}D`}) in ${pct(pv.kStats.half)} of animal pairs × frames; mean weight ${pv.kStats.mean.toFixed(2)}.`
         : 'Proximity weighting is off: other animals count fully at any distance.';
       drawKernelCurve(cfg, pv.kStats.dist);
     }
     $('#w-note').textContent = social
-      ? "Untick a node to drop it (from every animal). Rotation: each other animal is turned about the focal centroid by the smallest angle that puts it on the focal body axis, in front if it was in front and behind if it was behind, at its true distance; what remains is its distance, front/back, and its pose/orientation relative to the line between them (left vs right is dropped; an animal exactly beside the focal one can flip between front and behind). Proximity: its coordinates are then multiplied by w(d) = exp(−½ (d/d₀)²), an isotropic Gaussian centred on the focal animal's centroid, read at the other animal's centroid: d is the distance between the two centroids in that frame, in 3D (including height, e.g. one animal on a block above the other) or 2D (floor only), so a distant animal shrinks to \"nobody nearby\". d₀ is in body lengths (nose-to-tail extent) and is the same along every axis. Other animals are ordered nearest-first by the same distance. The egocentric frame itself is unchanged."
+      ? "Untick a node to drop it (from every animal). Each other animal is expressed in the focal animal's frame as it is (left and right stay distinct). Proximity: its coordinates are then multiplied by w = exp(−½ [(forward² + Δheight²)/d₀² + lateral²/(ρ·d₀)²]), a Gaussian field centred on the focal animal's centroid and read at the other animal's centroid, in the focal frame, so a distant animal shrinks to \"nobody nearby\". d₀ is the reach ahead and behind, in body lengths (nose-to-tail extent); side reach ρ shrinks it to the sides, so an animal in front of or behind the focal one counts more than one beside it, without any snapping (ρ = 1: the isotropic Gaussian). Height counts only with 3D distance (e.g. one animal on a block above the other). Other animals are ordered nearest-first by centroid distance (3D or 2D). The egocentric frame itself is unchanged."
       : 'Untick a node to drop it from the analysis (for every animal). The egocentric frame itself is still defined by the same body axis.';
     $('#w-summary').textContent = weightNote(cfg) || 'all nodes';
     drawFeatureDiagram(cfg);
@@ -2087,6 +2095,12 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
     let dmax = 0;
     for (let i = 0; i < dist.length; i++) dmax = Math.max(dmax, dist[i]);
     dmax = Math.max(dmax, (cfg.kernel ? cfg.kernel.d0 : 0) * 2.5) || 1;
+    const curve = (sig, color, dash) => {
+      ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.setLineDash(dash);
+      ctx.beginPath();
+      for (let x = 0; x <= pw; x += 2) { const dd = (x / pw) * dmax, y = T + ph * (1 - Math.exp(-0.5 * (dd / sig) ** 2)); x ? ctx.lineTo(L + x, y) : ctx.moveTo(L + x, y); }
+      ctx.stroke(); ctx.setLineDash([]);
+    };
     const L = 4, R = 4, T = 4, B = 12, pw = w - L - R, ph = h - T - B, NB = 40;
     const hist = new Float64Array(NB);
     for (let i = 0; i < dist.length; i++) hist[Math.min(NB - 1, Math.floor((dist[i] / dmax) * NB))]++;
@@ -2094,24 +2108,22 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
     ctx.fillStyle = cssVar('--grid-major');
     for (let b = 0; b < NB; b++) { const bh = (hist[b] / hm) * ph * 0.9; ctx.fillRect(L + (b * pw) / NB + 0.5, T + ph - bh, pw / NB - 1, bh); }
     if (cfg.kernel) {
-      ctx.strokeStyle = cssVar('--accent'); ctx.lineWidth = 2;
-      ctx.beginPath();
-      for (let x = 0; x <= pw; x += 2) { const dd = (x / pw) * dmax, y = T + ph * (1 - Math.exp(-0.5 * (dd / cfg.kernel.d0) ** 2)); x ? ctx.lineTo(L + x, y) : ctx.moveTo(L + x, y); }
-      ctx.stroke();
+      if (cfg.kernel.side < 1) curve(cfg.kernel.side * cfg.kernel.d0, cssVar('--accent-2'), [4, 3]);   // straight to the side
+      curve(cfg.kernel.d0, cssVar('--accent'), []);                                                  // ahead or behind
       const xd = L + (cfg.kernel.d0 / dmax) * pw;
       ctx.fillStyle = cssVar('--muted'); ctx.fillRect(Math.round(xd), T, 1, ph);
     }
     ctx.font = `500 9px ${cssVar('--mono')}`; ctx.fillStyle = cssVar('--muted'); ctx.textBaseline = 'alphabetic';
     ctx.textAlign = 'left'; ctx.fillText('0', L, h - 1);
     ctx.textAlign = 'right'; ctx.fillText(fmtLenShort(dmax), w - R, h - 1);
-    ctx.textAlign = 'center'; ctx.fillText('distance · bars: this clip · line: weight', L + pw / 2, h - 1);
+    ctx.textAlign = 'center'; ctx.fillText(cfg.kernel && cfg.kernel.side < 1 ? 'distance · bars: this clip · weight: ahead/behind, dashed: side' : 'distance · bars: this clip · line: weight', L + pw / 2, h - 1);
   }
   $('#w-reset').addEventListener('click', () => { weights.on = weights.on.map(() => true); updateWeights(); });
   $('#w-box').addEventListener('toggle', () => { if ($('#w-box').open) updateWeights(true); });   // the curve needs a laid-out canvas
-  $('#k-align').addEventListener('change', () => { weights.align = $('#k-align').checked; renderClusterPanel(); });
-  $('#k-on').addEventListener('change', () => { weights.kernelOn = $('#k-on').checked; $('#k-d0').disabled = !weights.kernelOn; updateWeights(); });
+  $('#k-on').addEventListener('change', () => { weights.kernelOn = $('#k-on').checked; $('#k-d0').disabled = $('#k-side').disabled = !weights.kernelOn; updateWeights(); });
   $('#k-dims').addEventListener('change', () => { weights.dims = Number($('#k-dims').value); updateWeights(); });
   $('#k-d0').addEventListener('input', () => { weights.d0Body = Number($('#k-d0').value); updateWeights(); });
+  $('#k-side').addEventListener('input', () => { weights.side = Number($('#k-side').value); updateWeights(); });
 
   // One row per animal per frame: animal 1's frames first, then animal 2's, ... ("blocks").
   function buildFeatures(cfg) {
@@ -2137,25 +2149,19 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
         others.forEach((b, o) => {
           const dd = dist(b), slot = (a * nF + f) * nO + o;
           kd[slot] = dd;
-          if (cfg.kernel) kw[slot] = Math.exp(-0.5 * (dd / cfg.kernel.d0) ** 2);
-          // bearing of the other animal's centroid in the focal frame; with alignment, every joint of
-          // that animal is rotated about the focal centroid by the smallest angle that puts its centroid
-          // on the focal body axis: in front if it was in front, behind if it was behind (the bearing is
-          // wrapped into (−90°, 90°]), at its true distance. Only which side (left/right) is dropped.
-          let ca = 1, sa = 0;
-          if (cfg.align) {
-            const bx = S.centroids[b][f][0] - c[0], bz = S.centroids[b][f][2] - c[2];
-            let phi = Math.atan2(-bx * sn + bz * cs, bx * cs + bz * sn);
-            if (phi > Math.PI / 2) phi -= Math.PI; else if (phi <= -Math.PI / 2) phi += Math.PI;
-            ca = Math.cos(phi); sa = Math.sin(phi);
+          if (cfg.kernel) {
+            // the other centroid in the focal frame: ahead/behind and height on d₀, sideways on ρ·d₀
+            const bx = S.centroids[b][f][0] - c[0], bz = S.centroids[b][f][2] - c[2], dh = d3 ? S.centroidHeights[b][f] - h : 0;
+            const fwc = bx * cs + bz * sn, latc = -bx * sn + bz * cs, k0 = cfg.kernel.d0, kl = cfg.kernel.side * k0;
+            kw[slot] = Math.exp(-0.5 * ((fwc * fwc + dh * dh) / (k0 * k0) + (latc * latc) / (kl * kl)));
           }
+          // every joint of the other animal in the focal frame, as it is (left and right stay distinct)
           S.animals[b].idx.forEach((ji, k) => {
             const q = pos[f][ji], dx = q[0] - c[0], dz = q[2] - c[2], off = row + d * (o + 1) + k * axes;
             const fw = dx * cs + dz * sn, lat = -dx * sn + dz * cs;
-            const fw2 = fw * ca + lat * sa, lat2 = -fw * sa + lat * ca;   // rotate by −bearing
-            X[off] = fw2;                                                 // forward
-            if (axes === 3) { X[off + 1] = q[1]; X[off + 2] = lat2; }     // up, lateral
-            else X[off + 1] = lat2;                                       // lateral
+            X[off] = fw;                                                  // forward
+            if (axes === 3) { X[off + 1] = q[1]; X[off + 2] = lat; }      // up, lateral
+            else X[off + 1] = lat;                                        // lateral
           });
         });
       }
@@ -2246,14 +2252,15 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
       count = `${J} node${J === 1 ? '' : 's'} × ${axes} axes = ${d} features`;
     } else {
       // two other animals at different distances, each faded by its proximity weight w(d)
-      const BL = 60, wOf = (db) => (cfg.kernel ? Math.exp(-0.5 * (db / cfg.kernel.d0Body) ** 2) : 1);
+      const BL = 60, k = cfg.kernel;
+      const wOf = (db, bear) => (k ? Math.exp(-0.5 * (((db * Math.cos(bear)) / k.d0Body) ** 2 + ((db * Math.sin(bear)) / (k.side * k.d0Body)) ** 2)) : 1);
       const os = 0.8, others = [
         { db: 1.3, ang: Math.PI - 0.35, bear: -0.32 },
         { db: 3.4, ang: 0.45, bear: -0.1 },
       ];
       let drawn = '';
       others.forEach((o, i) => {
-        const w = wOf(o.db), bear = cfg.align ? 0 : o.bear;
+        const bear = o.bear, w = wOf(o.db, bear);
         const ox = cx + o.db * BL * Math.cos(bear), oy = cy + o.db * BL * Math.sin(bear);
         const pt = (x, y) => [ox + os * (x * Math.cos(o.ang) - y * Math.sin(o.ang)), oy + os * (x * Math.sin(o.ang) + y * Math.cos(o.ang))];
         const op = (0.12 + 0.88 * w).toFixed(2);
@@ -2262,9 +2269,10 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
           `<text x="${(ox + 6).toFixed(1)}" y="${(oy + 42).toFixed(1)}" text-anchor="middle">${i ? 'farther' : 'near'}: w = ${w.toFixed(2)}</text>` +
           `<text class="fd-mono" x="${(ox + 6).toFixed(1)}" y="${(oy + 54).toFixed(1)}" text-anchor="middle">${o.db} body lengths</text>`;
       });
-      drawing = axesSVG + drawn + animalSVG(cx, cy, 0, 1.0, 'fd-focal') + labels;
+      const field = k ? `<ellipse class="fd-field" cx="${cx}" cy="${cy}" rx="${(1.177 * k.d0Body * BL).toFixed(1)}" ry="${(1.177 * k.side * k.d0Body * BL).toFixed(1)}"/>` : '';
+      drawing = field + axesSVG + drawn + animalSVG(cx, cy, 0, 1.0, 'fd-focal') + labels;
       title = 'Social';
-      desc = `own + others' nodes, focal frame${cfg.align ? ', rotated onto the axis' : ''}${cfg.kernel ? ', × w(d)' : ''}`;
+      desc = `own + others' nodes, focal frame${cfg.kernel ? `, × w (dashed: w = 0.5${cfg.kernel.side < 1 ? ', elliptical' : ''})` : ''}`;
       count = `${d} own + ${d}${A > 2 ? ` × ${A - 1}` : ''} others = ${d * A} features`;
     }
     const caption = `<text class="fd-strong" x="8" y="122">${title}</text><text x="8" y="137">${desc}</text><text class="fd-mono" x="8" y="152">${count}</text>`;
@@ -2592,8 +2600,7 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
       const F = egoFeat(0);
       parts.push(`Egocentric frame: centred on each animal's centroid, rotated so its ${pretty(F.post)} → ${pretty(F.ant)} axis points forward.`);
       if (cfg.mode === 'social') parts.push(`Social adds every other animal's ${J} nodes in that frame${S.A > 2 ? ', nearest animal first' : ''}` +
-        (cfg.align ? ', each rotated about the focal centroid onto its body axis (in front or behind; left/right dropped)' : '') +
-        (cfg.kernel ? `, scaled by proximity (isotropic ${cfg.kernel.dims}D Gaussian on the centroid-to-centroid distance, d₀ = ${cfg.kernel.d0Body} body lengths) so distant animals fade out.` : ', at full weight at any distance (proximity weighting off).'));
+        (cfg.kernel ? `, scaled by proximity (${cfg.kernel.side < 1 ? `elliptical Gaussian field, reach d₀ = ${cfg.kernel.d0Body} body lengths ahead and behind and ${+(cfg.kernel.side * cfg.kernel.d0Body).toFixed(2)} to the sides` : `isotropic ${cfg.kernel.dims}D Gaussian on the centroid-to-centroid distance, d₀ = ${cfg.kernel.d0Body} body lengths`}) so distant animals fade out.` : ', at full weight at any distance (proximity weighting off).'));
     }
     parts.push(S.A > 1
       ? `${featureCount(cfg)} features per sample; one sample per animal per frame (${clip.frame_count} × ${S.A} = ${clip.frame_count * S.A}), all embedded in one shared space.`
@@ -2883,8 +2890,7 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
         mode: cfg.mode, nodes, removed_nodes: nodes.filter((_, j) => F.removed && F.removed[j]),
         axes: S.dims === 3 ? ['forward', 'up', 'lateral'] : ['forward', 'lateral'],
         egocentric_axis: { anterior: E.ant, posterior: E.post },
-        align_others: !!cfg.align,
-        proximity_kernel: cfg.kernel ? { type: 'gaussian', d0: r6(cfg.kernel.d0), d0_body_lengths: cfg.kernel.d0Body, dims: cfg.kernel.dims, distance: 'centroid to centroid' } : null,
+        proximity_kernel: cfg.kernel ? { type: 'gaussian', d0: r6(cfg.kernel.d0), d0_body_lengths: cfg.kernel.d0Body, lateral_scale: cfg.kernel.side, dims: cfg.kernel.dims, distance: 'centroid to centroid' } : null,
         distance_dims: cfg.distDims,
         body_length: r6(bodyLength()), feature_names: F.names,
       },
