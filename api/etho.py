@@ -160,6 +160,7 @@ def _features(P, feat, dims):
     # exports before these settings existed used floor distances and an isotropic kernel
     d3 = dims == 3 and int(feat.get('distance_dims', 2)) == 3
     side = float(kernel.get('lateral_scale', 1.0)) if kernel else 1.0
+    beta = float(feat.get('others_scale') or 1.0) if social else 1.0   # others vs own (own pose stays at 1)
     X = np.zeros((A, nF, d * blocks))
     for a in range(A):
         X[a, :, :d] = in_frame(a, P[a])
@@ -186,7 +187,7 @@ def _features(P, feat, dims):
                 w = np.exp(-0.5 * ((fwc ** 2 + hh ** 2) / k0 ** 2 + latc ** 2 / (side * k0) ** 2))
             else:
                 w = np.ones(nF)
-            X[a, :, d * (o + 1):d * (o + 2)] = in_frame(a, Q, rot) * w[:, None]
+            X[a, :, d * (o + 1):d * (o + 2)] = in_frame(a, Q, rot) * (w * beta)[:, None]
     removed = set(feat.get('removed_nodes') or [])
     axes = 3 if dims == 3 else 2
     keep = np.array([nodes[(k % d) // axes] not in removed for k in range(d * blocks)], float)

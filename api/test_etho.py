@@ -142,6 +142,15 @@ def test_elliptical_field():
     assert np.array_equal(etho._features(P, old, 3), etho._features(P, new, 3))
 
 
+def test_others_scale():
+    feat = dict(CLUSTERS['features'], align_others=False)
+    _, P = etho._tracks(POSE, 0, feat['nodes'], 'm')
+    X1, X3 = etho._features(P, feat, 3), etho._features(P, dict(feat, others_scale=3.0), 3)
+    d = X1.shape[1] // 2
+    assert np.array_equal(X1[:, :d], X3[:, :d])            # own pose untouched
+    assert np.allclose(X3[:, d:], 3 * X1[:, d:])
+
+
 def test_analysis_notebook_runs_on_applied_result():
     # the result file is a normal etho-clusters export: the viewer's analysis notebook reads it
     r = MODEL.apply(POSE)

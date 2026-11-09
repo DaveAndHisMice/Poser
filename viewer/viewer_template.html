@@ -297,6 +297,11 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
               <input type="range" id="k-side" min="0.1" max="1" step="0.05" value="0.5">
               <output id="k-side-val" for="k-side" class="mono"></output>
             </div>
+            <div class="field-row">
+              <label class="small" for="k-others" title="Weight of the other animals' blocks relative to the animal's own pose (applied on top of the proximity field). PCA follows variance, so this sets how much the clustering is about the social scene versus the animal's own posture; the Input variance line below shows the resulting split.">Others vs own</label>
+              <input type="range" id="k-others" min="-1" max="1" step="0.05" value="0" aria-describedby="w-share">
+              <output id="k-others-val" for="k-others" class="mono"></output>
+            </div>
             <canvas id="k-curve" aria-label="Weight as a function of distance straight ahead or behind, and straight to the side, with the distribution of distances in this clip"></canvas>
             <p id="k-stats" class="note"></p>
           </div>
@@ -325,13 +330,18 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
       </div>
       <div class="field-row hp">
         <label class="small" for="hp-sticky" title="Pseudo-count added to each state's self-transitions, as a fraction of its expected number of frames. Higher = fewer, longer bouts.">Stickiness</label>
-        <input id="hp-sticky" type="range" min="0" max="1" step="0.05" value="0.1">
+        <input id="hp-sticky" type="range" min="0" max="4" step="0.05" value="0.1">
         <output id="hp-sticky-val" for="hp-sticky" class="mono"></output>
         <label class="small" for="hp-iters" title="Maximum EM iterations per fit (stops earlier when the log-likelihood converges)">EM iterations</label>
         <input id="hp-iters" type="number" min="10" max="500" step="10" value="80">
       </div>
       <div class="field-row">
+        <button id="cl-opt" type="button" title="Search stickiness and EM iterations for the most states that are also stable: long bouts, and the same states again when refit from other starting points. Click again to stop.">Optimize rsLDS</button>
         <button id="cl-run" class="primary" type="button">Run</button>
+      </div>
+      <div id="opt-box" class="result" hidden>
+        <p id="opt-note" class="note"></p>
+        <div class="table-wrap"><table id="opt-table" aria-label="Stickiness and EM iteration settings tried, best first"></table></div>
       </div>
       <p id="dr-input" class="note"></p>
   </div>
@@ -1963,8 +1973,10 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
   // ρ = 1 is the isotropic Gaussian exp(−½ (d/d₀)²); ρ < 1 an ellipse along the body axis, so an
   // animal in front or behind counts more than one beside, smoothly (no snapping). Δheight counts
   // only with 3D distances. Other animals are ordered nearest-first by plain centroid distance
-  // (3D with height, or 2D on the floor).
-  const weights = { sig: '', on: [], kernelOn: true, d0Body: 1, side: 0.5, dims: 3 };
+  // (3D with height, or 2D on the floor). "Others vs own" multiplies every other-animal block by β
+  // (own pose stays at 1, so reconstructions need no un-scaling): the balance PCA sees between the
+  // social scene and the animal's own posture.
+  const weights = { sig: '', on: [], kernelOn: true, d0Body: 1, side: 0.5, others: 1, dims: 3 };
   const distDims = () => (S.dims === 3 ? weights.dims : 2);
   function syncWeights() {
     const sig = S.animals[0].idx.map((i) => S.joints[i].base).join('|');
@@ -1981,6 +1993,7 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
       w: Float64Array.from(weights.on, (on) => (on ? 1 : 0)),
       kernel: social && weights.kernelOn ? { d0: weights.d0Body * bodyLength(), d0Body: weights.d0Body, dims: distDims(), side: weights.side } : null,
       distDims: distDims(),
+      othersScale: social ? weights.others : 1,
     };
   }
   function featureCount(cfg) {
@@ -1993,6 +2006,7 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
     const off = [...cfg.w].filter((w) => w === 0).length;
     const parts = [];
     if (off) parts.push(`${off} node${off === 1 ? '' : 's'} removed`);
+    if (cfg.othersScale !== 1) parts.push(`others ×${fmtRatio(cfg.othersScale)}`);
     if (cfg.kernel) parts.push(`proximity d₀ ${cfg.kernel.d0Body} body, ${cfg.kernel.side < 1 ? `sides ×${cfg.kernel.side}, ` : ''}${cfg.kernel.dims}D`);
     return parts.join(', ');
   }
@@ -2019,6 +2033,7 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
     const tot = own + oth;
     return { node: Array.from(node, (x) => (tot > 0 ? x / tot : 0)), own: tot > 0 ? own / tot : 0, others: tot > 0 ? oth / tot : 0, kStats: F.kStats };
   }
+  const fmtRatio = (b) => (b >= 10 || b < 0.1 ? b.toPrecision(2) : +b.toFixed(b < 1 ? 2 : 1)).toString();
   const pct = (x) => (x >= 0.995 ? '100%' : x < 0.0005 ? '0%' : `${(x * 100).toFixed(x < 0.1 ? 1 : 0)}%`);
   const fmtLenShort = (v) => { const u = (dataset && dataset.space.units) || 'm'; return u === 'm' ? `${+(v * 100).toPrecision(3)} cm` : `${+v.toPrecision(3)} ${u}`; };
 
@@ -2033,6 +2048,7 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
     $('#k-d0').value = String(weights.d0Body);
     $('#k-d0').disabled = !weights.kernelOn;
     $('#k-side').value = String(weights.side);
+    $('#k-others').value = String(Math.log10(weights.others));
     $('#k-side').disabled = !weights.kernelOn;
     $('#k-dims-row').hidden = S.dims !== 3;
     $('#k-dims').value = String(weights.dims);
@@ -2074,6 +2090,7 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
       $(`#w-${j}-on`).checked = on;
     });
     $('#k-d0-val').textContent = `${weights.d0Body.toFixed(2)} body = ${fmtLenShort(weights.d0Body * bodyLength())}`;
+    $('#k-others-val').textContent = `own 1 : others ${fmtRatio(weights.others)}`;
     $('#k-side-val').textContent = weights.side >= 1 ? '1 (round)' : `${weights.side.toFixed(2)} × d₀ = ${fmtLenShort(weights.side * weights.d0Body * bodyLength())}`;
     $('#w-share').textContent = pv && social ? `Input variance: ${pct(pv.own)} own pose · ${pct(pv.others)} other animals` : '';
     if (social && pv && pv.kStats) {
@@ -2083,7 +2100,7 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
       drawKernelCurve(cfg, pv.kStats.dist);
     }
     $('#w-note').textContent = social
-      ? "Untick a node to drop it (from every animal). Each other animal is expressed in the focal animal's frame as it is (left and right stay distinct). Proximity: its coordinates are then multiplied by w = exp(−½ [(forward² + Δheight²)/d₀² + lateral²/(ρ·d₀)²]), a Gaussian field centred on the focal animal's centroid and read at the other animal's centroid, in the focal frame, so a distant animal shrinks to \"nobody nearby\". d₀ is the reach ahead and behind, in body lengths (nose-to-tail extent); side reach ρ shrinks it to the sides, so an animal in front of or behind the focal one counts more than one beside it, without any snapping (ρ = 1: the isotropic Gaussian). Height counts only with 3D distance (e.g. one animal on a block above the other). Other animals are ordered nearest-first by centroid distance (3D or 2D). The egocentric frame itself is unchanged."
+      ? "Untick a node to drop it (from every animal). Each other animal is expressed in the focal animal's frame as it is (left and right stay distinct). Proximity: its coordinates are then multiplied by w = exp(−½ [(forward² + Δheight²)/d₀² + lateral²/(ρ·d₀)²]), a Gaussian field centred on the focal animal's centroid and read at the other animal's centroid, in the focal frame, so a distant animal shrinks to \"nobody nearby\". d₀ is the reach ahead and behind, in body lengths (nose-to-tail extent); side reach ρ shrinks it to the sides, so an animal in front of or behind the focal one counts more than one beside it, without any snapping (ρ = 1: the isotropic Gaussian). Height counts only with 3D distance (e.g. one animal on a block above the other). Others vs own then multiplies every other animal's coordinates by β (own pose stays at 1): PCA follows variance, so β sets how much the states are about the social scene versus the animal's own posture (see the input-variance split below). Other animals are ordered nearest-first by centroid distance (3D or 2D). The egocentric frame itself is unchanged."
       : 'Untick a node to drop it from the analysis (for every animal). The egocentric frame itself is still defined by the same body axis.';
     $('#w-summary').textContent = weightNote(cfg) || 'all nodes';
     drawFeatureDiagram(cfg);
@@ -2124,6 +2141,7 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
   $('#k-dims').addEventListener('change', () => { weights.dims = Number($('#k-dims').value); updateWeights(); });
   $('#k-d0').addEventListener('input', () => { weights.d0Body = Number($('#k-d0').value); updateWeights(); });
   $('#k-side').addEventListener('input', () => { weights.side = Number($('#k-side').value); updateWeights(); });
+  $('#k-others').addEventListener('input', () => { weights.others = +(10 ** Number($('#k-others').value)).toPrecision(3); updateWeights(); });
 
   // One row per animal per frame: animal 1's frames first, then animal 2's, ... ("blocks").
   function buildFeatures(cfg) {
@@ -2181,7 +2199,7 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
     for (let i = 0; i < n; i++) {
       for (let k = 0; k < D; k++) {
         const blk = Math.floor(k / d);
-        X[i * D + k] *= colScale[k] * (blk ? kw[i * nO + blk - 1] : 1);
+        X[i * D + k] *= colScale[k] * (blk ? kw[i * nO + blk - 1] * (cfg.othersScale || 1) : 1);
       }
     }
     // share of the input variance carried by the animal's own pose (social: vs the other animals)
@@ -2272,7 +2290,7 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
       const field = k ? `<ellipse class="fd-field" cx="${cx}" cy="${cy}" rx="${(1.177 * k.d0Body * BL).toFixed(1)}" ry="${(1.177 * k.side * k.d0Body * BL).toFixed(1)}"/>` : '';
       drawing = field + axesSVG + drawn + animalSVG(cx, cy, 0, 1.0, 'fd-focal') + labels;
       title = 'Social';
-      desc = `own + others' nodes, focal frame${cfg.kernel ? `, × w (dashed: w = 0.5${cfg.kernel.side < 1 ? ', elliptical' : ''})` : ''}`;
+      desc = `own + others' nodes, focal frame${cfg.othersScale !== 1 ? `, others ×${fmtRatio(cfg.othersScale)}` : ''}${cfg.kernel ? `, × w (dashed: w = 0.5${cfg.kernel.side < 1 ? ', elliptical' : ''})` : ''}`;
       count = `${d} own + ${d}${A > 2 ? ` × ${A - 1}` : ''} others = ${d * A} features`;
     }
     const caption = `<text class="fd-strong" x="8" y="122">${title}</text><text x="8" y="137">${desc}</text><text class="fd-mono" x="8" y="152">${count}</text>`;
@@ -2284,8 +2302,8 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
 
   // k-means with k-means++ seeding; best (lowest within-cluster sum of squares) of nInit runs.
   // Seeded, so the same data and k always give the same clusters.
-  function kmeans(Z, n, m, k, nInit = 10, maxIter = 300) {
-    const rand = mulberry32(20261106);
+  function kmeans(Z, n, m, k, nInit = 10, maxIter = 300, seed = 20261106) {
+    const rand = mulberry32(seed);
     const dist2 = (i, cen, c) => { let s = 0; for (let q = 0; q < m; q++) { const v = Z[i * m + q] - cen[c * m + q]; s += v * v; } return s; };
     let best = null;
     for (let run = 0; run < nInit; run++) {
@@ -2369,7 +2387,7 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
       feat[p * 2 * m + a] = Z[px[p] * m + a] / ps;
       feat[p * 2 * m + m + a] = (Z[py[p] * m + a] - Z[px[p] * m + a]) / vs;
     }
-    const init = kmeans(feat, NP, 2 * m, k);
+    const init = kmeans(feat, NP, 2 * m, k, 10, 300, opts.seed != null ? opts.seed : 20261106);
     const R = new Float64Array(NP * k);
     for (let p = 0; p < NP; p++) R[p * k + init.labels[p]] = 1;
     const Wt = new Float64Array(k * d1 * m), L = new Float64Array(k * m * m), logDet = new Float64Array(k);
@@ -2600,6 +2618,7 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
       const F = egoFeat(0);
       parts.push(`Egocentric frame: centred on each animal's centroid, rotated so its ${pretty(F.post)} → ${pretty(F.ant)} axis points forward.`);
       if (cfg.mode === 'social') parts.push(`Social adds every other animal's ${J} nodes in that frame${S.A > 2 ? ', nearest animal first' : ''}` +
+        (cfg.othersScale !== 1 ? `, weighted ×${fmtRatio(cfg.othersScale)} relative to the animal's own pose` : '') +
         (cfg.kernel ? `, scaled by proximity (${cfg.kernel.side < 1 ? `elliptical Gaussian field, reach d₀ = ${cfg.kernel.d0Body} body lengths ahead and behind and ${+(cfg.kernel.side * cfg.kernel.d0Body).toFixed(2)} to the sides` : `isotropic ${cfg.kernel.dims}D Gaussian on the centroid-to-centroid distance, d₀ = ${cfg.kernel.d0Body} body lengths`}) so distant animals fade out.` : ', at full weight at any distance (proximity weighting off).'));
     }
     parts.push(S.A > 1
@@ -2614,6 +2633,9 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
     const A = S.analysis || {};
     const ready = !!(A.dr && A.km);
     $('#cl-results').hidden = !ready;
+    const optRes = ready && A.km.optRes;
+    $('#opt-box').hidden = !optRes;
+    if (optRes) renderOptTable(optRes);
     if (ready) {
       const P = A.dr, K = A.km;
       $('#dr-summary').innerHTML = '';
@@ -2892,6 +2914,7 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
         egocentric_axis: { anterior: E.ant, posterior: E.post },
         proximity_kernel: cfg.kernel ? { type: 'gaussian', d0: r6(cfg.kernel.d0), d0_body_lengths: cfg.kernel.d0Body, lateral_scale: cfg.kernel.side, dims: cfg.kernel.dims, distance: 'centroid to centroid' } : null,
         distance_dims: cfg.distDims,
+        others_scale: cfg.mode === 'social' ? cfg.othersScale : undefined,
         body_length: r6(bodyLength()), feature_names: F.names,
       },
       reduction: {
@@ -2902,7 +2925,7 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
       model: {
         method: 'switching_linear_dynamics', space: P.clusterSpace === 'raw' ? 'raw_features' : 'pca', dims: m,
         k: K.k, k_auto: K.autoK, criterion: 'BIC', k_selection: K.kScores.map((s2) => ({ k: s2.k, bic: r6(s2.bic) })),
-        hyperparameters: { k_min: K.hp.kmin, k_max: K.hp.kmax, stickiness: K.hp.sticky, max_em_iterations: K.hp.iters },
+        hyperparameters: { k_min: K.hp.kmin, k_max: K.hp.kmax, stickiness: K.hp.sticky, max_em_iterations: K.hp.iters, ...(K.hp.optimized ? { optimized: K.hp.optimized } : {}) },
         log_likelihood_per_step: r6(K.ll), bic: r6(K.bic), em_iterations: K.iters, converged: K.converged,
         transition_matrix: K.trans.map((row) => row.map(r6)), initial_distribution: K.init.map(r6), states,
       },
@@ -3672,7 +3695,7 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
       X = new Float64Array(P.n * m);
       for (let f = 0; f < P.n; f++) for (let q = 0; q < m; q++) X[f * m + q] = P.scores[f * P.keep + q];
     }
-    const opts = { ...(P.clusterSpace === 'raw' ? { ridge: 1e-3, reg: 1e-3 } : {}), sticky: st.sticky != null ? st.sticky : 0.1 };
+    const opts = { ...(P.clusterSpace === 'raw' ? { ridge: 1e-3, reg: 1e-3 } : {}), sticky: st.sticky != null ? st.sticky : 0.1, seed: st.seed };
     const res = arhmm(X, P.n, m, k, P.nF || P.n, P.blocks || 1, clip.loop, st.iters || 80, 1e-5, opts);
     return { ...res, method: 'lds', k, dims: m, X, stats: clusterStats(res.labels, k, clip.fps, P.nF || P.n) };
   }
@@ -3684,7 +3707,7 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
   function hyperParams() {
     const int = (sel, lo, hi, dflt) => Math.max(lo, Math.min(hi, Math.round(Number($(sel).value)) || dflt));
     const kmin = int('#hp-kmin', 1, 30, K_MIN), kmax = Math.max(kmin, int('#hp-kmax', 1, 30, K_MAX));
-    return { kmin, kmax, sticky: Math.max(0, Math.min(1, Number($('#hp-sticky').value) || 0)), iters: int('#hp-iters', 10, 500, 80) };
+    return { kmin, kmax, sticky: Math.max(0, Math.min(4, Number($('#hp-sticky').value) || 0)), iters: int('#hp-iters', 10, 500, 80) };
   }
   async function selectK(dr, st, progress) {
     const rule = K_RULE;
@@ -3705,11 +3728,87 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
     return best;
   }
 
+  // ---------- Optimize rsLDS: stickiness and EM iterations ----------
+  // Unsupervised: no number of states is given. Every setting runs the normal k search (lowest BIC),
+  // then each state of the chosen fit gets a stability s = dwell × reproducibility:
+  //   dwell           share of the state's frames in bouts of at least OPT_MIN_BOUT_S (≥ 2 frames)
+  //   reproducibility mean, over refits of the same k from other random starts, of the best Jaccard
+  //                   overlap between this state's frames and any state of the refit
+  // A state is stable when s ≥ OPT_STABLE and it holds at least OPT_MIN_SHARE of the frames. Settings are
+  // ranked by the number of stable states, then their mean s, then fewer iterations and less stickiness.
+  // EM usually converges within 50 iterations, so two caps suffice; stickiness reaches 4 because the
+  // best settings sat at the old top of 1.
+  const OPT_STICKY = [0, 0.1, 0.25, 0.5, 1, 2, 4], OPT_ITERS = [50, 100], OPT_SEEDS = [1, 2];
+  const OPT_MIN_BOUT_S = 0.1, OPT_STABLE = 0.5, OPT_MIN_SHARE = 0.005;
+  function stateStability(dr, km, restarts, fps) {
+    const lab = km.labels, n = lab.length, k = km.k, nF = dr.nF || n, minRun = Math.max(2, Math.round(OPT_MIN_BOUT_S * fps));
+    const count = new Float64Array(k), long = new Float64Array(k);
+    for (let i = 0; i < n; i++) count[lab[i]]++;
+    for (let s0 = 0; s0 < n;) {          // runs of one state within one animal's sequence
+      let e = s0;
+      while (e + 1 < n && (e + 1) % nF !== 0 && lab[e + 1] === lab[s0]) e++;
+      if (e - s0 + 1 >= minRun) long[lab[s0]] += e - s0 + 1;
+      s0 = e + 1;
+    }
+    const repro = new Float64Array(k);
+    restarts.forEach((r) => {
+      const C = Array.from({ length: k }, () => new Float64Array(r.k)), cnt = new Float64Array(r.k);
+      for (let i = 0; i < n; i++) { C[lab[i]][r.labels[i]]++; cnt[r.labels[i]]++; }
+      for (let c = 0; c < k; c++) {
+        let best = 0;
+        for (let q = 0; q < r.k; q++) { const inter = C[c][q], uni = count[c] + cnt[q] - inter; if (uni > 0) best = Math.max(best, inter / uni); }
+        repro[c] += best / restarts.length;
+      }
+    });
+    const states = Array.from({ length: k }, (_, c) => {
+      const share = count[c] / n, dwell = count[c] ? long[c] / count[c] : 0, s = dwell * (restarts.length ? repro[c] : 1);
+      return { share, dwell, repro: repro[c], s, stable: share >= OPT_MIN_SHARE && s >= OPT_STABLE };
+    });
+    const st = states.filter((x) => x.stable);
+    return { states, nStable: st.length, stability: st.length ? st.reduce((a, x) => a + x.s, 0) / st.length : 0,
+      coverage: st.reduce((a, x) => a + x.share, 0) };
+  }
+  const optBetter = (a, b) => (a.nStable !== b.nStable ? a.nStable > b.nStable
+    : Math.abs(a.stability - b.stability) > 1e-9 ? a.stability > b.stability
+      : a.iters !== b.iters ? a.iters < b.iters : a.sticky < b.sticky);
+  async function optimizeRsLDS(dr, st, progress, cancelled) {
+    const rows = [], total = OPT_STICKY.length * OPT_ITERS.length;
+    let best = null, done = 0;
+    for (const sticky of OPT_STICKY) {
+      let prev = null;
+      for (const iters of OPT_ITERS) {
+        if (cancelled()) return { best, rows, stopped: true };
+        done++;
+        // every fit converged below the previous cap: a higher cap gives the same result
+        if (prev && prev.km.fits.every((f) => f.converged && f.iters < prev.iters)) {
+          const row = { ...prev, iters, same: prev.iters };
+          rows.push(row);
+          if (optBetter(row, best)) best = row;
+          continue;
+        }
+        const km = await selectK(dr, { ...st, sticky, iters }, (k, top) => progress(done, total, sticky, iters, `k ${k}/${top}`));
+        const restarts = [];
+        for (const seed of OPT_SEEDS) {
+          if (cancelled()) return { best, rows, stopped: true };
+          progress(done, total, sticky, iters, `refit ${restarts.length + 1}/${OPT_SEEDS.length}`);
+          await pause();
+          restarts.push(cluster(dr, { ...st, sticky, iters, k: km.k, seed }));
+        }
+        const row = { sticky, iters, k: km.k, km, ...stateStability(dr, km, restarts, clip.fps) };
+        rows.push(row);
+        if (!best || optBetter(row, best)) best = row;
+        prev = row;
+      }
+    }
+    return { best, rows, stopped: false };
+  }
+
   let busy = false;
   function setBusy(on, text) {
     busy = on;
     $('#cl-run').disabled = on;
     $('#cl-run').textContent = on && text ? text : 'Run';
+    $('#cl-opt').disabled = on;
   }
   const showErr = (err) => { $('#cl-error').textContent = err.message || String(err); $('#cl-error').hidden = false; };
 
@@ -3728,6 +3827,57 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
       D.analysis = { dr, km, F };
     } catch (err) { showErr(err); }
     setBusy(false);
+    if (D === S) { renderClusterPanel(); syncClusterHeat(D); }
+  });
+
+  let optRunning = false, optStop = false;
+  function renderOptTable(res) {
+    const rows = res.rows.slice().sort((a, b) => (optBetter(a, b) ? -1 : 1));
+    const fmt = (v) => v.toFixed(2);
+    $('#opt-table').innerHTML = '<thead><tr><th>stickiness</th><th>EM iter.</th><th class="num">k (BIC)</th><th class="num">stable</th><th class="num">stability</th><th class="num">coverage</th></tr></thead><tbody>' +
+      rows.slice(0, 8).map((r) => `<tr${r === res.best ? ' class="best"' : ''}><td class="num">${fmt(r.sticky)}</td><td class="num">${r.iters}${r.same ? ' =' : ''}</td><td class="num">${r.k}</td>` +
+        `<td class="num">${r.nStable}</td><td class="num">${fmt(r.stability)}</td><td class="num">${pct(r.coverage)}</td></tr>`).join('') + '</tbody>';
+    const b = res.best;
+    $('#opt-note').textContent = (res.stopped ? `Stopped after ${res.rows.length} of ${OPT_STICKY.length * OPT_ITERS.length} settings. ` : `${res.rows.length} settings tried. `) +
+      `Best: stickiness ${fmt(b.sticky)}, ${b.iters} EM iterations: BIC picks k = ${b.k}, of which ${b.nStable} state${b.nStable === 1 ? ' is' : 's are'} stable ` +
+      `(mean stability ${fmt(b.stability)}, ${pct(b.coverage)} of frames). The sliders are set to it and its fit is shown below. ` +
+      `Stability of a state = share of its frames in bouts of at least ${OPT_MIN_BOUT_S} s × how well it reappears when refit from ${OPT_SEEDS.length} other random starts (best overlap of its frames, Jaccard); ` +
+      `stable means ≥ ${OPT_STABLE} and at least ${OPT_MIN_SHARE * 100}% of the frames. Ranked by the number of stable states, then their stability. No number of states is assumed. ` +
+      '"=" marks a setting whose fits had all converged under fewer iterations, so it repeats that result. Top 8 shown.';
+    $('#opt-box').hidden = false;
+  }
+  $('#cl-opt').addEventListener('click', async () => {
+    if (optRunning) { optStop = true; $('#cl-opt').textContent = 'Stopping…'; return; }
+    if (busy) return;
+    $('#cl-error').hidden = true;
+    const D = S, st = readSettings();
+    busy = optRunning = true; optStop = false;
+    $('#cl-run').disabled = true;
+    $('#cl-opt').classList.add('primary');
+    await pause(30);
+    try {
+      const F = buildFeatures(st.cfg);
+      const dr = reduce(F, st.W, st);
+      dr.featDesc = describeFeatures(st.cfg);
+      dr.ownVar = F.ownVar;
+      const res = await optimizeRsLDS(dr, st, (i, n, sticky, iters, what) => {
+        if (!optStop) $('#cl-opt').textContent = `Stop · ${i}/${n}: stickiness ${sticky}, ${iters} iter., ${what}`;
+      }, () => optStop);
+      if (res.best) {
+        const km = res.best.km;
+        km.hp.optimized = { criterion: 'most stable states', stickiness: res.best.sticky, iterations: res.best.iters,
+          stable_states: res.best.nStable, stability: +res.best.stability.toFixed(4), settings_tried: res.rows.length };
+        $('#hp-sticky').value = String(res.best.sticky);
+        $('#hp-iters').value = String(res.best.iters);
+        updateKRule();
+        km.optRes = res;               // the table is shown while this fit is
+        D.analysis = { dr, km, F };
+      }
+    } catch (err) { showErr(err); }
+    busy = optRunning = false;
+    $('#cl-opt').textContent = 'Optimize rsLDS';
+    $('#cl-opt').classList.remove('primary');
+    $('#cl-run').disabled = false;
     if (D === S) { renderClusterPanel(); syncClusterHeat(D); }
   });
 

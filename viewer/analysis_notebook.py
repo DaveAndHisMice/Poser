@@ -187,6 +187,8 @@ if feat['mode'] == 'social':
                                 f"elliptical Gaussian field: d0 = {k['d0_body_lengths']} body lengths ({k['d0'] * TO_DISPLAY:.1f} {LEN}) ahead and behind, "
                                 f"{side * k['d0_body_lengths']:.2f} to the sides" if side < 1 else
                                 f"{'isotropic %dD ' % k['dims'] if k.get('dims') else ''}Gaussian on centroid-to-centroid distance, d0 = {k['d0_body_lengths']} body lengths ({k['d0'] * TO_DISPLAY:.1f} {LEN})")
+if feat['mode'] == 'social' and feat.get('others_scale', 1) != 1:
+    info['others vs own'] = f"other animals x{feat['others_scale']} relative to the own pose"
 info['reduction'] = (f"PCA, {red['n_components']} PCs = {100 * red['cumulative_variance'][red['n_components'] - 1]:.1f}% of variance"
                      if red['method'] == 'pca' else f"none (model on {red['n_components']} raw features)")
 info['model'] = f"switching linear dynamics, k = {model['k']} (best by BIC: k = {model['k_auto']})"

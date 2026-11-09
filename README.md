@@ -286,6 +286,12 @@ mean anything. With ρ = 1 the field is the isotropic Gaussian exp(−½ (d/d₀
 distance d. The 3D distance separates an animal on a block above the focal animal from one beside
 it on the floor; the same distance (2D or 3D) sets the nearest-first order.
 
+**Others vs own.** Finally every other-animal block is multiplied by β (slider 1 : 0.1 to 1 : 10,
+default 1). PCA follows variance, so β sets how much the states are about the social scene versus
+the animal's own posture. With several animals the others can dominate: in `mouse_social` at β = 1
+they carry 83% of the input variance, at β = 0.3 the own pose carries 70%. The Weights panel shows
+this split live. The own block is never rescaled, so poses rebuilt from the PCs need no correction.
+
 Earlier versions instead rotated each other animal onto the focal body axis (in front or behind),
 which dropped left and right. An animal beside the focal one then sat on the boundary and flipped
 between front and behind from frame to frame, and in the `mouse_social` example every one-frame
@@ -526,6 +532,40 @@ Going from 1 to 2 states increases the likelihood enormously. Extra states add a
 likelihood but cost more than they gain. Every fit is kept, so clicking another k in the viewer's
 BIC plot switches to it at once.
 
+**Optimize rsLDS.** The button left of Run searches stickiness (0, 0.1, 0.25, 0.5, 1, 2, 4) and
+EM iterations (50, 100) for the most states that are also stable. It never uses a
+known number of states: every setting runs the normal k search above, and each state of the chosen
+fit gets a stability score
+
+```
+ s = dwell × reproducibility
+ dwell           = share of the state's frames in bouts of at least 0.1 s (≥ 2 frames)
+ reproducibility = mean, over 2 refits of the same k from other random starts, of the best
+                   Jaccard overlap between this state's frames and any state of the refit
+```
+
+A state is **stable** when s ≥ 0.5 and it holds at least 0.5% of the frames. Settings are ranked by
+the number of stable states, then their mean s, then fewer iterations and less stickiness. When
+every fit of a setting converged under its iteration cap, higher caps repeat its result and are
+skipped. The winner is written into the sliders and its fit is shown, with a table of the best
+settings; the export records it under `model.hyperparameters.optimized`.
+
+Checked against the scripted behaviours (which the optimizer never sees):
+
+| dataset | search time (headless) | k (BIC) | stable states | NMI of the pick vs best setting | rank vs NMI |
+|---|---|---|---|---|---|
+| `mouse_social` (2 mice) | 23 s | 7 | 7 | 0.50 vs 0.51 | 0.82 |
+| `mouse_group_blocks` (4 mice, noisy)¹ | 34 min | 12 | 4 | 0.20 vs 0.22 | −0.39 |
+
+¹ Measured with an earlier, larger grid (stickiness 0–1 in 8 steps × 25–200 iterations, 32
+settings); the current grid has 14.
+
+On the clean two-mouse clip the pick is as good as any setting and the ranking tracks agreement
+with the true phases. On the noisy four-mouse clip every setting flickers (about 1,800 one-frame
+bouts in 7,200 samples) and matches the behaviours poorly, so there is nothing good to choose
+between: the limit there is in the features, not in stickiness, and the search is slow on large
+data. On the two-mouse clip the best stickiness is 0.5; 2 and 4 add nothing.
+
 **Labels and bouts.**
 
 ```
@@ -570,10 +610,12 @@ with the other animals in grey for social runs. These are real frames, not recon
 | Distance | Weights (social, 3D data) | 3D | centroid distance with height (3D) or on the floor (2D); used for w(d) and ordering |
 | d₀ | Weights (social) | 1 body length | reach of the Gaussian field ahead and behind (and in height) |
 | Side reach ρ | Weights (social) | 0.5 | reach to the sides as a fraction of d₀; 1 = isotropic |
+| Others vs own β | Weights (social) | 1 : 1 | multiplies every other-animal block (0.1–10, log scale); own pose stays at 1 |
 | Reduction | Clustering | PCA, 95% variance | or None: dynamics on raw features |
 | k from / to | Clustering | 2 / 15 | range searched; lowest BIC wins |
-| Stickiness | Clustering | 0.1 | self-transition pseudo-count, as a fraction of transitions per state |
+| Stickiness | Clustering | 0.1 | self-transition pseudo-count, as a fraction of transitions per state (0–4) |
 | EM iterations | Clustering | 80 | maximum per fit (stops earlier on convergence) |
+| Optimize rsLDS | Clustering (button) | – | searches stickiness and EM iterations for the most stable states; sets both sliders |
 
 ---
 
