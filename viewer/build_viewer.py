@@ -20,7 +20,7 @@ HERE = Path(__file__).resolve().parent
 def notebook_cells(path):
     """Split a Jupytext percent-format file into [{type, source}] cells (test-only cells skipped)."""
     cells, cur = [], None
-    for line in path.read_text().split('\n'):
+    for line in path.read_text(encoding="utf-8").split('\n'):
         if line.startswith('# %%'):
             if cur:
                 cells.append(cur)
@@ -44,18 +44,18 @@ def notebook_cells(path):
 
 def main():
     out = Path(sys.argv[1]) if len(sys.argv) > 1 else HERE / "pose_viewer.html"
-    importer = (HERE / "pose_format.js").read_text()
+    importer = (HERE / "pose_format.js").read_text(encoding="utf-8")
     assert "</" not in importer  # safe to inline inside <script>
-    report = (HERE / "report_pdf.js").read_text()
+    report = (HERE / "report_pdf.js").read_text(encoding="utf-8")
     assert "</" not in report
     cells = json.dumps(notebook_cells(HERE / "analysis_notebook.py"))
     assert "</" not in cells     # safe to inline inside <script type="application/json">
-    template = (HERE / "viewer_template.html").read_text()
+    template = (HERE / "viewer_template.html").read_text(encoding="utf-8")
     assert template.count("/*__POSE_FORMAT__*/") == 1
     assert template.count("/*__NOTEBOOK__*/") == 1
     assert template.count("/*__REPORT__*/") == 1
     out.write_text(template.replace("/*__POSE_FORMAT__*/", importer).replace("/*__REPORT__*/", report)
-                   .replace("/*__NOTEBOOK__*/", cells))
+                   .replace("/*__NOTEBOOK__*/", cells), encoding="utf-8")
     print(f"wrote {out} ({out.stat().st_size / 1024:.0f} KB)")
 
 

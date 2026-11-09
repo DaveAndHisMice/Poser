@@ -22,6 +22,10 @@
   --bone-axial: #c7cbc9;
   --accent: #8fb5a8;
   --accent-2: #c8a27c;
+  --accent-3: #8fa6cf;   /* animals 3-6: one hue each, same lightness and softness as the first two */
+  --accent-4: #cf8fa3;
+  --accent-5: #b9b36e;
+  --accent-6: #ab93d1;
   --bone2-left: #efe4d4;
   --bone2-right: #a8987f;
   --bone2-axial: #cdbfa9;
@@ -276,6 +280,13 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
           <div id="w-kernel" class="w-kernel" hidden>
             <label class="check" for="k-align"><input type="checkbox" id="k-align" checked> Rotate other animals onto the body axis, in front or behind (drops left/right)</label>
             <label class="check" for="k-on"><input type="checkbox" id="k-on" checked> Proximity weighting of other animals (Gaussian)</label>
+            <div class="field-row" id="k-dims-row">
+              <label class="small" for="k-dims">Distance</label>
+              <select id="k-dims">
+                <option value="3">3D: centroid to centroid, with height</option>
+                <option value="2">2D: centroid to centroid, on the floor</option>
+              </select>
+            </div>
             <div class="field-row">
               <label class="small" for="k-d0">d₀</label>
               <input type="range" id="k-d0" min="0.2" max="4" step="0.05" value="1">
@@ -489,13 +500,29 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
     right: new THREE.MeshStandardMaterial({ color: col('--bone-right'), roughness: 0.5 }),
     axial: new THREE.MeshStandardMaterial({ color: col('--bone-axial'), roughness: 0.5 }),
   };
-  // every second animal is drawn in warm greys so two skeletons stay distinguishable
+  // the second animal is drawn in warm greys
   const mats2 = {
     left: new THREE.MeshStandardMaterial({ color: col('--bone2-left'), roughness: 0.5 }),
     right: new THREE.MeshStandardMaterial({ color: col('--bone2-right'), roughness: 0.5 }),
     axial: new THREE.MeshStandardMaterial({ color: col('--bone2-axial'), roughness: 0.5 }),
   };
-  const matFor = (j) => ((j.animal || 0) % 2 ? mats2 : mats)[sideOf(j.name)];
+
+  // Every animal has its own color: --accent, --accent-2, ... --accent-6, then golden-ratio hue
+  // steps at the same softness. Paths, menu swatches and the reconstruction ghost use it directly;
+  // skeletons use greys tinted toward it (animals 1 and 2 keep their neutral and warm greys).
+  const ANIMAL_VARS = ['--accent', '--accent-2', '--accent-3', '--accent-4', '--accent-5', '--accent-6'];
+  const animalColor = (a) => (a < ANIMAL_VARS.length ? cssVar(ANIMAL_VARS[a])
+    : '#' + new THREE.Color().setHSL((0.62 + (a - ANIMAL_VARS.length) * 0.618034) % 1, 0.4, 0.66).getHexString());
+  const animalMats = [mats, mats2];
+  function matsOf(a) {
+    if (!animalMats[a]) {
+      const c = new THREE.Color(animalColor(a));
+      const tint = (grey, k) => new THREE.MeshStandardMaterial({ color: c.clone().lerp(new THREE.Color(grey), k), roughness: 0.5 });
+      animalMats[a] = { left: tint('#f0f0f0', 0.75), axial: tint('#d0d0d0', 0.5), right: tint('#9a9a9a', 0.5) };
+    }
+    return animalMats[a];
+  }
+  const matFor = (j) => matsOf(j.animal || 0)[sideOf(j.name)];
 
   // ---------- datasets ----------
   const niceStep = (x) => {
@@ -596,6 +623,12 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
       return [x / an.idx.length, 0, z / an.idx.length];
     }));
     const allCentroids = centroids.flat();   // sample order: animal 1's frames, then animal 2's, ...
+    // and its height (mean joint height; 0 for 2D data), for 3D centroid-to-centroid distances
+    const centroidHeights = animals.map((an) => positions.map((fr) => {
+      let y = 0;
+      an.idx.forEach((i) => { y += fr[i][1]; });
+      return dims === 3 ? y / an.idx.length : 0;
+    }));
 
     // one scale for everything: the larger of body size and how far the centroids range
     const body0 = animals[0].idx.map((i) => positions[0][i]);
@@ -612,7 +645,7 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
     return {
       label, joints, bones, cell, jointR, height, bodyExt, dims, animals, A, jointsPerAnimal: J, filled,
       clip: { name: clipData.name, fps: clipData.fps, frame_count: n, loop: !!clipData.loop, positions, root_motion_per_loop: rm, events },
-      centroids, allCentroids, centroid: centroids[0],
+      centroids, centroidHeights, allCentroids, centroid: centroids[0],
     };
   }
 
@@ -622,7 +655,6 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
   const centroidOf = (v) => { if (v === 'centroid') return 0; const m = /^centroid@(\d+)$/.exec(v || ''); return m ? Number(m[1]) : -1; };
   const isCentroidKey = (v) => { const a = centroidOf(v); return a >= 0 && a < S.A; };
   const centroidLabel = (a) => (S.A > 1 ? `Centroid · ${S.animals[a].name}` : 'Centroid');
-  const pathColorVar = (a) => (a % 2 ? '--accent-2' : '--accent');
 
   let dataset = null;   // the loaded etho-pose dataset
   let datasetFile = null;
@@ -698,7 +730,7 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
     trailBase = -1;
     const tracks = [];
     for (let a = 0; a < S.A; a++) {
-      if (pathSel.has(ckey(a))) tracks.push({ get: (f) => S.centroids[a][f], color: col(pathColorVar(a)), opacity: 0.7 });
+      if (pathSel.has(ckey(a))) tracks.push({ get: (f) => S.centroids[a][f], color: new THREE.Color(animalColor(a)), opacity: 0.7 });
     }
     if (multiNode()) {
       S.joints.forEach((j, i) => {
@@ -951,12 +983,12 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
   }
   const perAnimal = (leaf, nodesHead, meta) => (S.A === 1
     ? animalRows(0, leaf, nodesHead)
-    : S.animals.map((an, a) => ({ kind: 'sub', label: an.name, swatch: cssVar(pathColorVar(a)), meta: meta(a), children: animalRows(a, leaf, nodesHead) })));
+    : S.animals.map((an, a) => ({ kind: 'sub', label: an.name, swatch: animalColor(a), meta: meta(a), children: animalRows(a, leaf, nodesHead) })));
 
   function pathsTree() {
     const leaf = (v, label, a, i) => ({
       kind: 'check', label, mono: i !== undefined, on: pathSel.has(v), act: () => togglePath(v),
-      swatch: i !== undefined ? '#' + jointMats[i].color.getHexString() : cssVar(pathColorVar(a)),
+      swatch: i !== undefined ? '#' + jointMats[i].color.getHexString() : animalColor(a),
     });
     const names = (a) => nodeIdx(a).map((i) => S.joints[i].name);
     const head = (a) => ({
@@ -1918,8 +1950,12 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
   // ---------- weights ----------
   // Nodes can be removed (shared by every animal; for social features also removed from the other
   // animals). The only scaling is a Gaussian proximity kernel on the other animals' coordinates:
-  // w(d) = exp(−½ (d/d₀)²), d = floor distance between centroids in that frame, d₀ in body lengths.
-  const weights = { sig: '', on: [], kernelOn: true, d0Body: 1, align: true };
+  // w(d) = exp(−½ (d/d₀)²), an isotropic Gaussian centred on the focal animal's centroid and read at
+  // the other animal's centroid. d is their distance in that frame in n dimensions: 3D (x, height, z)
+  // or 2D (the floor), d₀ in body lengths and the same along every axis. The same distance orders
+  // the other animals nearest-first.
+  const weights = { sig: '', on: [], kernelOn: true, d0Body: 1, align: true, dims: 3 };
+  const distDims = () => (S.dims === 3 ? weights.dims : 2);
   function syncWeights() {
     const sig = S.animals[0].idx.map((i) => S.joints[i].base).join('|');
     if (weights.sig === sig) return;
@@ -1933,8 +1969,9 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
     return {
       mode: social ? 'social' : 'ego',
       w: Float64Array.from(weights.on, (on) => (on ? 1 : 0)),
-      kernel: social && weights.kernelOn ? { d0: weights.d0Body * bodyLength(), d0Body: weights.d0Body } : null,
+      kernel: social && weights.kernelOn ? { d0: weights.d0Body * bodyLength(), d0Body: weights.d0Body, dims: distDims() } : null,
       align: social && weights.align,
+      distDims: distDims(),
     };
   }
   function featureCount(cfg) {
@@ -1948,7 +1985,7 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
     const parts = [];
     if (off) parts.push(`${off} node${off === 1 ? '' : 's'} removed`);
     if (cfg.align) parts.push('others rotated onto axis');
-    if (cfg.kernel) parts.push(`proximity d₀ ${cfg.kernel.d0Body} body`);
+    if (cfg.kernel) parts.push(`proximity d₀ ${cfg.kernel.d0Body} body, ${cfg.kernel.dims}D`);
     return parts.join(', ');
   }
   function describeFeatures(cfg) {
@@ -1988,6 +2025,8 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
     $('#k-align').checked = weights.align;
     $('#k-d0').value = String(weights.d0Body);
     $('#k-d0').disabled = !weights.kernelOn;
+    $('#k-dims-row').hidden = S.dims !== 3;
+    $('#k-dims').value = String(weights.dims);
     const key = `${weights.sig}`;
     if (weightsBuiltFor !== key) {
       weightsBuiltFor = key;
@@ -2029,12 +2068,12 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
     $('#w-share').textContent = pv && social ? `Input variance: ${pct(pv.own)} own pose · ${pct(pv.others)} other animals` : '';
     if (social && pv && pv.kStats) {
       $('#k-stats').textContent = cfg.kernel
-        ? `Weight > 0.5 (closer than ${fmtLenShort(1.177 * cfg.kernel.d0)}) in ${pct(pv.kStats.half)} of animal pairs × frames; mean weight ${pv.kStats.mean.toFixed(2)}.`
+        ? `Weight > 0.5 (closer than ${fmtLenShort(1.177 * cfg.kernel.d0)} in ${cfg.kernel.dims}D) in ${pct(pv.kStats.half)} of animal pairs × frames; mean weight ${pv.kStats.mean.toFixed(2)}.`
         : 'Proximity weighting is off: other animals count fully at any distance.';
       drawKernelCurve(cfg, pv.kStats.dist);
     }
     $('#w-note').textContent = social
-      ? "Untick a node to drop it (from every animal). Rotation: each other animal is turned about the focal centroid by the smallest angle that puts it on the focal body axis, in front if it was in front and behind if it was behind, at its true distance; what remains is its distance, front/back, and its pose/orientation relative to the line between them (left vs right is dropped; an animal exactly beside the focal one can flip between front and behind). Proximity: its coordinates are then multiplied by w(d) = exp(−½ (d/d₀)²), d = distance between centroids in that frame, so a distant animal shrinks to \"nobody nearby\". d₀ is in body lengths (nose-to-tail extent). The egocentric frame itself is unchanged."
+      ? "Untick a node to drop it (from every animal). Rotation: each other animal is turned about the focal centroid by the smallest angle that puts it on the focal body axis, in front if it was in front and behind if it was behind, at its true distance; what remains is its distance, front/back, and its pose/orientation relative to the line between them (left vs right is dropped; an animal exactly beside the focal one can flip between front and behind). Proximity: its coordinates are then multiplied by w(d) = exp(−½ (d/d₀)²), an isotropic Gaussian centred on the focal animal's centroid, read at the other animal's centroid: d is the distance between the two centroids in that frame, in 3D (including height, e.g. one animal on a block above the other) or 2D (floor only), so a distant animal shrinks to \"nobody nearby\". d₀ is in body lengths (nose-to-tail extent) and is the same along every axis. Other animals are ordered nearest-first by the same distance. The egocentric frame itself is unchanged."
       : 'Untick a node to drop it from the analysis (for every animal). The egocentric frame itself is still defined by the same body axis.';
     $('#w-summary').textContent = weightNote(cfg) || 'all nodes';
     drawFeatureDiagram(cfg);
@@ -2069,6 +2108,7 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
   $('#w-box').addEventListener('toggle', () => { if ($('#w-box').open) updateWeights(true); });   // the curve needs a laid-out canvas
   $('#k-align').addEventListener('change', () => { weights.align = $('#k-align').checked; renderClusterPanel(); });
   $('#k-on').addEventListener('change', () => { weights.kernelOn = $('#k-on').checked; $('#k-d0').disabled = !weights.kernelOn; updateWeights(); });
+  $('#k-dims').addEventListener('change', () => { weights.dims = Number($('#k-dims').value); updateWeights(); });
   $('#k-d0').addEventListener('input', () => { weights.d0Body = Number($('#k-d0').value); updateWeights(); });
 
   // One row per animal per frame: animal 1's frames first, then animal 2's, ... ("blocks").
@@ -2089,7 +2129,8 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
         const c = S.centroids[a][f], cs = Math.cos(E.th[f]), sn = Math.sin(E.th[f]);
         const others = [];
         for (let b = 0; b < A; b++) if (b !== a) others.push(b);
-        const dist = (b) => Math.hypot(S.centroids[b][f][0] - c[0], S.centroids[b][f][2] - c[2]);
+        const h = S.centroidHeights[a][f], d3 = cfg.distDims === 3;
+        const dist = (b) => Math.hypot(S.centroids[b][f][0] - c[0], S.centroids[b][f][2] - c[2], d3 ? S.centroidHeights[b][f] - h : 0);
         if (others.length > 1) others.sort((x, y) => dist(x) - dist(y));
         others.forEach((b, o) => {
           const dd = dist(b), slot = (a * nF + f) * nO + o;
@@ -2550,7 +2591,7 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
       parts.push(`Egocentric frame: centred on each animal's centroid, rotated so its ${pretty(F.post)} → ${pretty(F.ant)} axis points forward.`);
       if (cfg.mode === 'social') parts.push(`Social adds every other animal's ${J} nodes in that frame${S.A > 2 ? ', nearest animal first' : ''}` +
         (cfg.align ? ', each rotated about the focal centroid onto its body axis (in front or behind; left/right dropped)' : '') +
-        (cfg.kernel ? `, scaled by proximity (Gaussian, d₀ = ${cfg.kernel.d0Body} body lengths) so distant animals fade out.` : ', at full weight at any distance (proximity weighting off).'));
+        (cfg.kernel ? `, scaled by proximity (isotropic ${cfg.kernel.dims}D Gaussian on the centroid-to-centroid distance, d₀ = ${cfg.kernel.d0Body} body lengths) so distant animals fade out.` : ', at full weight at any distance (proximity weighting off).'));
     }
     parts.push(S.A > 1
       ? `${featureCount(cfg)} features per sample; one sample per animal per frame (${clip.frame_count} × ${S.A} = ${clip.frame_count * S.A}), all embedded in one shared space.`
@@ -2841,7 +2882,8 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
         axes: S.dims === 3 ? ['forward', 'up', 'lateral'] : ['forward', 'lateral'],
         egocentric_axis: { anterior: E.ant, posterior: E.post },
         align_others: !!cfg.align,
-        proximity_kernel: cfg.kernel ? { type: 'gaussian', d0: r6(cfg.kernel.d0), d0_body_lengths: cfg.kernel.d0Body } : null,
+        proximity_kernel: cfg.kernel ? { type: 'gaussian', d0: r6(cfg.kernel.d0), d0_body_lengths: cfg.kernel.d0Body, dims: cfg.kernel.dims, distance: 'centroid to centroid' } : null,
+        distance_dims: cfg.distDims,
         body_length: r6(bodyLength()), feature_names: F.names,
       },
       reduction: {
@@ -3793,7 +3835,8 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
   const ghost = new THREE.Group();
   ghost.visible = false;
   scene.add(ghost);
-  const ghostMats = ['--accent', '--accent-2'].map((v) => new THREE.MeshStandardMaterial({ color: col(v), roughness: 0.5, transparent: true, opacity: 0.8 }));
+  const ghostMats = [];
+  const ghostMat = (a) => ghostMats[a] || (ghostMats[a] = new THREE.MeshStandardMaterial({ color: new THREE.Color(animalColor(a)), roughness: 0.5, transparent: true, opacity: 0.8 }));
   let G = null;          // { S, dr, q, pos: [frame][joint][xyz], errF, rms }
   let ghostRigFor = null, ghostJ = [], ghostB = [], ghostP = [];
   let reconDr = null;    // analysis the PC slider was last reset for
@@ -3843,13 +3886,13 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
     clearGroup(ghost);
     ghostP = S.joints.map(() => new THREE.Vector3());
     ghostJ = S.joints.map((j) => {
-      const m = new THREE.Mesh(sphereGeo, ghostMats[j.animal % 2]);
+      const m = new THREE.Mesh(sphereGeo, ghostMat(j.animal));
       m.scale.setScalar(S.jointR * 0.9);
       ghost.add(m);
       return m;
     });
     ghostB = S.bones.map(([, c]) => {
-      const m = new THREE.Mesh(boneGeo, ghostMats[S.joints[c].animal % 2]);
+      const m = new THREE.Mesh(boneGeo, ghostMat(S.joints[c].animal));
       ghost.add(m);
       return m;
     });

@@ -590,7 +590,7 @@
     if (feat.mode === 'social') {
       info.push(['Other animals rotated onto the body axis', feat.align_others ? 'yes' : 'no']);
       const k = feat.proximity_kernel;
-      info.push(['Proximity kernel', k ? `Gaussian, d0 = ${k.d0_body_lengths} body lengths (${(k.d0 * R.TO_DISPLAY).toFixed(1)} ${LEN})` : 'off']);
+      info.push(['Proximity kernel', k ? `${k.dims ? `isotropic ${k.dims}D ` : ''}Gaussian on centroid-to-centroid distance, d0 = ${k.d0_body_lengths} body lengths (${(k.d0 * R.TO_DISPLAY).toFixed(1)} ${LEN})` : 'off']);
     }
     info.push(['Reduction', red.method === 'pca' ? `PCA, ${red.n_components} PCs = ${pct(red.cumulative_variance[red.n_components - 1])} of variance` : `none (model on ${red.n_components} raw features)`]);
     info.push(['Model', `switching linear dynamics, k = ${R.model.k} (best by BIC: k = ${R.model.k_auto})`]);

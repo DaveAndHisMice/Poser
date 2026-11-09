@@ -181,7 +181,7 @@ info = {
 if feat['mode'] == 'social':
     info['other animals rotated onto the body axis'] = feat.get('align_others')
     k = feat.get('proximity_kernel')
-    info['proximity kernel'] = (f"Gaussian, d0 = {k['d0_body_lengths']} body lengths ({k['d0'] * TO_DISPLAY:.1f} {LEN})"
+    info['proximity kernel'] = (f"{'isotropic %dD ' % k['dims'] if k.get('dims') else ''}Gaussian on centroid-to-centroid distance, d0 = {k['d0_body_lengths']} body lengths ({k['d0'] * TO_DISPLAY:.1f} {LEN})"
                                 if k else 'off')
 info['reduction'] = (f"PCA, {red['n_components']} PCs = {100 * red['cumulative_variance'][red['n_components'] - 1]:.1f}% of variance"
                      if red['method'] == 'pca' else f"none (model on {red['n_components']} raw features)")

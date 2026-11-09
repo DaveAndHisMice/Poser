@@ -45,7 +45,8 @@ origin, body axis forward).
 | `axes` | `[string]` | per-joint coordinates: `forward, up, lateral` (3D) or `forward, lateral` (2D) |
 | `egocentric_axis` | object | `anterior`, `posterior`: the nodes defining the body axis |
 | `align_others` | bool | social: each other animal rotated about the focal centroid onto the body axis (in front or behind) |
-| `proximity_kernel` | object \| null | social: `{type: "gaussian", d0, d0_body_lengths}`; other animals scaled by exp(−½ (d/d0)²) |
+| `proximity_kernel` | object \| null | social: `{type: "gaussian", d0, d0_body_lengths, dims, distance}`; each other animal scaled by exp(−½ (d/d0)²), an isotropic Gaussian centred on the focal centroid, where d is the centroid-to-centroid distance in `dims` (3: x, height, z; 2: the floor) dimensions |
+| `distance_dims` | 2 \| 3 | social: dimensions of the centroid distance used for the kernel and for ordering other animals nearest-first |
 | `body_length` | number | the length unit `d0_body_lengths` refers to |
 | `feature_names` | `[string]` | one per feature column: `own/<node>/<axis>` or `other<i>/<node>/<axis>` |
 
