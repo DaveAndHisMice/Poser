@@ -4,8 +4,9 @@ etho turns tracked animal poses (anything from one 2D centroid to groups of 3D s
 **behavioural states**. It first builds egocentric and social features, then reduces them with
 PCA, and finally fits a **switching linear dynamical system**. In that model each state is a
 *flow field*: a rule for how the pose moves from one frame to the next. The whole pipeline runs
-in the browser in [`viewer/pose_viewer.html`](viewer/pose_viewer.html). Open the file, click
-**Load data…**, then open the **Clustering** tab.
+in the browser in [`viewer/pose_viewer.html`](viewer/pose_viewer.html). Open the file (or the
+**[hosted viewer](https://daveandhismice.github.io/etho/viewer/pose_viewer.html)**), click **Load data…**,
+then open the **Clustering** tab.
 
 This README explains the method step by step. Each step has a schematic and a worked example on
 toy data. All of the toy numbers and figures come from
