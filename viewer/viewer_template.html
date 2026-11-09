@@ -384,9 +384,10 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
         <button id="ex-csv" type="button" title="One row per animal per frame: animal, frame, time, state">Labels (.csv)</button>
         <button id="ex-pdf" type="button" class="primary" title="A PDF summary of the clustering: figures and a short description of each result">Summary report (.pdf)</button>
         <button id="ex-nb" type="button" title="A zip with a Jupyter notebook, the clusters file and the pose data">Analysis notebook (.zip)</button>
+        <button id="ex-script" type="button" title="A zip with this clustering run (etho-model), the etho.py API and a one-cell notebook that applies it to new data">Export script (.zip)</button>
       </div>
       <p id="ex-status" class="note" role="status"></p>
-      <p class="note">Clusters: the <b>etho-clusters</b> 1.0 format (one JSON file): every animal's state per frame (1-based), its bouts and PC scores, plus the model (transition matrix, each state's flow field A, b, noise and fixed point), the PCA (variance, loadings, feature names) and the feature settings. Report: a PDF with the ethogram, time budget, bouts, transitions, the PCA, the states in PC space, per-state movement and social measures, average poses and a plain-language summary of each state (built in the browser; the first export fetches the jsPDF library). Notebook: the same analysis as Python code; unzip and run all cells (needs numpy, pandas, matplotlib); it reads the clusters file and the pose data shipped beside it and summarises the behaviour in each state.</p>
+      <p class="note">Clusters: the <b>etho-clusters</b> 1.0 format (one JSON file): every animal's state per frame (1-based), its bouts and PC scores, plus the model (transition matrix, each state's flow field A, b, noise and fixed point), the PCA (variance, loadings, feature names) and the feature settings. Report: a PDF with the ethogram, time budget, bouts, transitions, the PCA, the states in PC space, per-state movement and social measures, average poses and a plain-language summary of each state (built in the browser; the first export fetches the jsPDF library). Notebook: the same analysis as Python code; unzip and run all cells (needs numpy, pandas, matplotlib); it reads the clusters file and the pose data shipped beside it and summarises the behaviour in each state. Script: this run's settings, PCA and states as an <b>etho-model</b> file, plus <code>etho.py</code> and a one-cell notebook that applies the same model to new pose data with the same skeleton, so its states mean the same behaviour (needs numpy, pandas; PCA runs only).</p>
     </div>
   </div>
 </section>
@@ -433,6 +434,7 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
 <script>/*__POSE_FORMAT__*/</script>
 <script>/*__REPORT__*/</script>
 <script type="application/json" id="nb-cells">/*__NOTEBOOK__*/</script>
+<script type="application/json" id="etho-py">/*__ETHO_PY__*/</script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
 <script>
@@ -2901,6 +2903,36 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
       animals,
     };
   }
+  // etho-model 1.0: the run without its per-frame data (see viewer/CLUSTER_FORMAT.md)
+  function modelExport() {
+    const { animals, ...rest } = clusterExport();
+    return { ...rest, format: 'etho-model', version: '1.0', generator: 'Pose Dataset Viewer' };
+  }
+  // one-cell notebook: apply the exported model to new data with the etho.py API
+  function scriptNotebookJSON(base) {
+    const K = S.analysis.km, cfg = S.analysis.F.cfg || featureConfig();
+    const src = datasetFile || `${dataset.meta.name}.json`;
+    const py = (v) => JSON.stringify(v);   // a JSON string is a valid Python string literal here
+    const code = [
+      `# Apply the clustering of ${dataset.meta.name}${dataset.clips.length > 1 ? ` (clip ${clip.name})` : ''}: ${K.k} states, ${cfg.mode} features.`,
+      '# Needs numpy and pandas; etho.py and the model file sit next to this notebook.',
+      'import etho',
+      '',
+      `model = etho.Model.load(${py(`${base}_model.json`)})   # the run: features, PCA, states`,
+      `NEW_DATA = ${py(src)}   # any etho-pose file with the same skeleton${cfg.mode === 'social' ? ` and ${S.A} animals` : ''}`,
+      '',
+      'result = model.apply(NEW_DATA)                    # first clip; clip=<index or name>, or model.apply_all(NEW_DATA)',
+      "result.save(NEW_DATA.rsplit('.', 1)[0] + '_clusters.json')   # labels, bouts, PC scores (etho-clusters)",
+      'print(result)',
+      'result.state_summary().round(2)                   # also: time_budget(), bout_stats(), transitions(), bouts(), measures()',
+    ].join('\n');
+    return JSON.stringify({
+      nbformat: 4, nbformat_minor: 5,
+      metadata: { kernelspec: { name: 'python3', display_name: 'Python 3', language: 'python' }, language_info: { name: 'python' } },
+      cells: [{ cell_type: 'code', id: 'apply', metadata: {}, execution_count: null, outputs: [],
+        source: code.split('\n').map((l, i, arr) => (i < arr.length - 1 ? `${l}\n` : l)) }],
+    }, null, 1);
+  }
   function labelsCSV() {
     const K = S.analysis.km, nF = clip.frame_count, out = ['animal_id,animal,frame,time_s,state'];
     const q = (v) => (/[",\n]/.test(v) ? `"${String(v).replace(/"/g, '""')}"` : v);
@@ -2983,6 +3015,22 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
         data = EthoReport.build(dataset, clusterExport(), { jsPDF }).output('blob');
       }
       else if (kind === 'csv') { name = `${base}_labels.csv`; data = labelsCSV(); }
+      else if (kind === 'script') {
+        if (S.analysis.dr.clusterSpace === 'raw') throw new Error('a model fit on raw features cannot be applied to new data; choose PCA reduction and run again');
+        name = `${base}_script.zip`;
+        const readme = `# ${dataset.meta.name}: apply this clustering to new data\n\n` +
+          `Open \`${base}_apply.ipynb\` in Jupyter, set NEW_DATA to an etho-pose file and run the cell (numpy, pandas).\n\n` +
+          `- \`${base}_model.json\`: the clustering run (etho-model 1.0): feature settings, PCA, and the switching linear dynamics states\n` +
+          '- `etho.py`: the API (rebuilds the features, projects onto the PCs, segments with the same states; see its docstring)\n' +
+          `- \`${base}_apply.ipynb\`: one cell applying the model\n\n` +
+          'The model is applied, not refit, so a state means the same behaviour in every dataset. The result file is an etho-clusters export, which the analysis notebook export also reads.\n';
+        data = makeZip([
+          { name: `${base}_apply.ipynb`, data: scriptNotebookJSON(base) },
+          { name: `${base}_model.json`, data: JSON.stringify(modelExport()) },
+          { name: 'etho.py', data: JSON.parse($('#etho-py').textContent) },
+          { name: 'README.md', data: readme },
+        ]);
+      }
       else {
         name = `${base}_analysis.zip`;
         const readme = `# ${dataset.meta.name}: behaviour analysis\n\nUnzip, open \`${base}_analysis.ipynb\` in Jupyter and run all cells (numpy, pandas, matplotlib).\n\n` +
@@ -3005,6 +3053,7 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
   $('#ex-csv').addEventListener('click', () => runExport('csv'));
   $('#ex-nb').addEventListener('click', () => runExport('nb'));
   $('#ex-pdf').addEventListener('click', () => runExport('pdf'));
+  $('#ex-script').addEventListener('click', () => runExport('script'));
 
   // ---------- cluster prototypes ----------
   // Real behaviour per cluster, no reconstruction: the bouts nearest the cluster's centre in PC space

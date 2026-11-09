@@ -104,6 +104,27 @@ the embedding are still complete.
 | `bouts` | `[{state, start, end, duration_s}]` | unbroken runs of one state; `start`/`end` inclusive frame indices |
 | `embedding` | `[[number]]` | `frame_count` rows of `embedding_components` PC scores |
 
+## etho-model 1.0
+**Export → Export script (.zip)** writes `<name>_model.json`: the same object without `animals`
+(no per-frame data), with `"format": "etho-model"`. It holds everything needed to apply the run to new
+pose data: `features` (how each sample is built), `reduction` (`mean`, `loadings`) and `model` (the
+states' `A`, `b`, `noise_cov`, `transition_matrix`, `initial_distribution`). Only runs with
+`reduction.method: "pca"` can be applied. The zip also holds `etho.py`, the Python API
+(`api/etho.py` in the repository), and a one-cell notebook:
+
+```python
+import etho
+model = etho.Model.load('session_model.json')   # etho-model or etho-clusters
+result = model.apply('new_session.json')         # etho-pose, same skeleton (social: same number of animals)
+result.save('new_session_clusters.json')         # etho-clusters 1.0
+result.state_summary()                           # also time_budget(), bout_stats(), transitions(), bouts(), measures()
+```
+
+Applying rebuilds the features exactly as the viewer does (joints matched by name, lengths converted
+between m, cm and mm, gaps interpolated), projects them with the stored PCA and finds the most likely
+state sequence (Viterbi) under the stored model. The states are not refit, so a state means the same
+behaviour in every dataset; applied to the data it was trained on it reproduces the viewer's labels.
+
 ## Labels CSV
 **Export → Labels (.csv)** writes the same labels as a long table:
 
