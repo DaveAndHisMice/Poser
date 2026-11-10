@@ -225,7 +225,7 @@ def main():
         },
         "clips": clips,
     }
-    out_path = Path(__file__).resolve().parent / "skeleton_dataset.json"
+    out_path = Path(__file__).resolve().parent.parent / "skeleton_dataset.json"   # examples/
     with open(out_path, "w") as f:
         json.dump(data, f, separators=(",", ":"))
     print(f"wrote {out_path}")

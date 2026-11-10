@@ -36,7 +36,7 @@ import numpy as np
 FPS = 30
 REGION = 0.40         # side of the square region the animal stays inside (m)
 HALF = REGION / 2
-OUT = Path(__file__).resolve().parent
+OUT = Path(__file__).resolve().parent.parent   # examples/
 
 # ------------------------------------------------------------------ trajectory
 

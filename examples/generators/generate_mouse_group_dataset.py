@@ -44,7 +44,7 @@ SECONDS = 60.0
 N = int(round(SECONDS * FPS))
 T = np.arange(N) / FPS
 HALF = 0.40                       # arena is 80 cm square, centred on the origin
-OUT = Path(__file__).resolve().parent / "mouse_group_blocks.json"
+OUT = Path(__file__).resolve().parent.parent / "mouse_group_blocks.json"   # examples/
 JI = {name: i for i, (name, _) in enumerate(g.MOUSE_JOINTS)}
 NAMES = ["mouse 1", "mouse 2", "mouse 3", "mouse 4"]
 

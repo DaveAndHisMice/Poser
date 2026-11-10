@@ -4,7 +4,7 @@ One JSON file holds one dataset: any number of animals, each tracked with some s
 single centroid point up to a full 3D skeleton), over one or more clips, with zero or more
 videos. The reference importer/validator is `viewer/pose_format.js` (`PoseFormat.load`,
 `PoseFormat.validate`); it also converts the legacy `pose-testset` / `quadruped-skeleton-testset`
-files (`mouse_*.json`, `skeleton_dataset.json`).
+files (`examples/mouse_*.json`, `examples/skeleton_dataset.json`).
 
 ## Top level
 

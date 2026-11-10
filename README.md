@@ -15,16 +15,22 @@ lines of numpy. Run it to reproduce them (see [Reproducing the examples](#reprod
 
 ```
 repo
-├── viewer/
+├── viewer/                     the site
 │   ├── pose_viewer.html        the app (built: open it in a browser)
 │   ├── viewer_template.html    its source; the whole analysis lives here
 │   ├── pose_format.js          etho-pose loader / validator      (spec: POSE_FORMAT.md)
+│   ├── pose_clean.js           the Clean tab (swaps, outliers, gap filling, smoothing)
 │   ├── report_pdf.js           PDF report export
 │   ├── analysis_notebook.py    notebook export (Python version of the summaries)
-│   ├── CLUSTER_FORMAT.md       spec of the clusters export
-│   └── build_viewer.py         template + js + notebook → pose_viewer.html
-├── generate_*.py               synthetic test datasets (mouse_*.json, skeleton_dataset.json)
-└── docs/toy_pipeline.py        the worked examples and figures in this README
+│   ├── CLUSTER_FORMAT.md       spec of the clusters and model exports
+│   └── build_viewer.py         template + js + notebook + API → pose_viewer.html
+├── api/etho.py                 Python API: apply an exported model to new data ("Export script")
+├── examples/
+│   ├── *.json                  synthetic datasets with known behaviours (table at the end)
+│   ├── mouse_social_analysis/  an example analysis export (notebook, clusters, pose)
+│   └── generators/             the scripts that make the datasets
+├── tests/test_etho.py          tests of the API against the viewer's own exports
+└── docs/                       toy_pipeline.py: the worked examples and figures in this README
 ```
 
 ---
@@ -707,6 +713,10 @@ datasets in the viewer:
 
 | file | what is in it |
 |---|---|
-| `mouse_3d.json`, `mouse_3d_large.json` | one mouse: running, rearing, grooming, stretched attend |
-| `mouse_social.json` | two mice: investigating, fighting, chasing |
-| `mouse_group_blocks.json` | four mice in an open field with blocks: 11 kinds of interaction, climbing, noise and missing data ([generator](generate_mouse_group_dataset.py)) |
+| `examples/mouse_3d.json`, `examples/mouse_3d_large.json` | one mouse: running, rearing, grooming, stretched attend |
+| `examples/mouse_social.json` | two mice: investigating, fighting, chasing |
+| `examples/mouse_group_blocks.json` | four mice in an open field with blocks: 11 kinds of interaction, climbing, noise and missing data |
+
+The datasets come from the scripts in `examples/generators/` (deterministic: rerunning them rewrites
+the same files). The tests run with `python tests/test_etho.py` (numpy, pandas; the clean-up test
+also replays the four-mouse generator for its noise-free scene).

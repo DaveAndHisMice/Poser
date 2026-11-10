@@ -8,7 +8,7 @@ Default output: viewer/pose_viewer.html. The page inlines the etho-pose importer
 (viewer/pose_format.js), the PDF report builder (viewer/report_pdf.js), the Python API shipped by "Export script"
 (api/etho.py) and the analysis-notebook template (viewer/analysis_notebook.py, split into
 cells), and loads three.js from a CDN (jsPDF too, on the first PDF export). No data is bundled: use the page's "Load data" button (or drop
-a file on it) to open an etho-pose file or a legacy pose-testset JSON such as mouse_3d.json. The
+a file on it) to open an etho-pose file or a legacy pose-testset JSON such as examples/mouse_3d.json. The
 formats are described in viewer/POSE_FORMAT.md and viewer/CLUSTER_FORMAT.md.
 """
 import json

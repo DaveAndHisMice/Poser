@@ -1,6 +1,6 @@
-"""Tests for etho.py against the viewer's own export (mouse_social_analysis/).
+"""Tests for etho.py against the viewer's own export (examples/mouse_social_analysis/).
 
-Run with `python api/test_etho.py` (or pytest). Needs numpy and pandas.
+Run with `python tests/test_etho.py` (or pytest). Needs numpy and pandas.
 """
 import copy
 import json
@@ -13,10 +13,11 @@ from pathlib import Path
 import numpy as np
 
 HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE))
+sys.path.insert(0, str(HERE.parent / 'api'))
 import etho  # noqa: E402
 
-DATA = HERE.parent / 'mouse_social_analysis'
+ROOT = HERE.parent
+DATA = ROOT / 'examples' / 'mouse_social_analysis'
 POSE = json.loads((DATA / 'mouse_social_pose.json').read_text())
 CLUSTERS = json.loads((DATA / 'mouse_social_clusters.json').read_text())
 MODEL = etho.Model.load(CLUSTERS)
@@ -167,8 +168,8 @@ def test_model_cleans_new_data_like_its_training_data():
 
 def test_clean_up_brings_noisy_group_closer_to_truth():
     # the four-mouse example is generated deterministically: replay the generator for the noise-free scene
-    root = HERE.parent
-    sys.path.insert(0, str(root))
+    root = ROOT / 'examples'
+    sys.path.insert(0, str(root / 'generators'))
     import generate_mouse_group_dataset as G
     rng = np.random.default_rng(20261109)
     paths, face_t, face_w, beh, _ = G.choreograph()
