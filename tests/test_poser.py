@@ -1,4 +1,4 @@
-"""Tests for poser.py against the viewer's own export (examples/mouse_social_analysis/).
+"""Tests for poser.py against the viewer's own export (tests/data/).
 
 Run with `python tests/test_poser.py` (or pytest). Needs numpy and pandas.
 """
@@ -17,7 +17,7 @@ sys.path.insert(0, str(HERE.parent / 'api'))
 import poser  # noqa: E402
 
 ROOT = HERE.parent
-DATA = ROOT / 'examples' / 'mouse_social_analysis'
+DATA = ROOT / 'tests' / 'data'
 POSE = json.loads((DATA / 'mouse_social_pose.json').read_text())
 CLUSTERS = json.loads((DATA / 'mouse_social_clusters.json').read_text())
 MODEL = poser.Model.load(CLUSTERS)

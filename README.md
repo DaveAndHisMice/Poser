@@ -27,9 +27,8 @@ repo
 ├── api/poser.py                 Python API: apply an exported model to new data ("Export script")
 ├── examples/
 │   ├── *.json                  synthetic datasets with known behaviours (table at the end)
-│   ├── mouse_social_analysis/  an example analysis export (notebook, clusters, pose)
 │   └── generators/             the scripts that make the datasets
-├── tests/test_poser.py          tests of the API against the viewer's own exports
+├── tests/                      test_poser.py: tests of the API; data/: a viewer export they run on
 └── docs/                       toy_pipeline.py: the worked examples and figures in this README
 ```
 
