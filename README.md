@@ -1,6 +1,6 @@
-# etho: pose viewer and behaviour analysis
+# Poser: pose viewer and behaviour analysis
 
-etho turns tracked animal poses (anything from one 2D centroid to groups of 3D skeletons) into
+Poser turns tracked animal poses (anything from one 2D centroid to groups of 3D skeletons) into
 **behavioural states**. It first builds egocentric and social features, then reduces them with
 PCA, and finally fits a **switching linear dynamical system**. In that model each state is a
 *flow field*: a rule for how the pose moves from one frame to the next. The whole pipeline runs
@@ -18,18 +18,18 @@ repo
 ├── viewer/                     the site
 │   ├── pose_viewer.html        the app (built: open it in a browser)
 │   ├── viewer_template.html    its source; the whole analysis lives here
-│   ├── pose_format.js          etho-pose loader / validator      (spec: POSE_FORMAT.md)
+│   ├── pose_format.js          poser-pose loader / validator      (spec: POSE_FORMAT.md)
 │   ├── pose_clean.js           the Clean tab (swaps, outliers, gap filling, smoothing)
 │   ├── report_pdf.js           PDF report export
 │   ├── analysis_notebook.py    notebook export (Python version of the summaries)
 │   ├── CLUSTER_FORMAT.md       spec of the clusters and model exports
 │   └── build_viewer.py         template + js + notebook + API → pose_viewer.html
-├── api/etho.py                 Python API: apply an exported model to new data ("Export script")
+├── api/poser.py                 Python API: apply an exported model to new data ("Export script")
 ├── examples/
 │   ├── *.json                  synthetic datasets with known behaviours (table at the end)
 │   ├── mouse_social_analysis/  an example analysis export (notebook, clusters, pose)
 │   └── generators/             the scripts that make the datasets
-├── tests/test_etho.py          tests of the API against the viewer's own exports
+├── tests/test_poser.py          tests of the API against the viewer's own exports
 └── docs/                       toy_pipeline.py: the worked examples and figures in this README
 ```
 
@@ -56,7 +56,7 @@ repo
 ## 0. The pipeline at a glance
 
 ```
- etho-pose JSON                       one sample = one animal in one frame
+ poser-pose JSON                       one sample = one animal in one frame
  (animals × frames × joints × xyz)
         │
         ▼
@@ -112,13 +112,13 @@ The design rests on three ideas:
 
 ## 1. Input data
 
-The viewer reads **etho-pose 1.0** JSON (full spec: [`viewer/POSE_FORMAT.md`](viewer/POSE_FORMAT.md)).
+The viewer reads **poser-pose 1.0** JSON (full spec: [`viewer/POSE_FORMAT.md`](viewer/POSE_FORMAT.md)).
 It also accepts the older `pose-testset` files. Toy example: two animals, a 3-joint skeleton,
 3 frames, one missing joint and one missing frame:
 
 ```jsonc
 {
-  "format": "etho-pose", "version": "1.0",
+  "format": "poser-pose", "version": "1.0",
   "space": { "dims": 3, "units": "cm", "up": "+Y" },
   "skeletons": { "mouse": { "joints": [
       { "name": "pelvis", "parent": null },
@@ -175,8 +175,8 @@ Toy example: the snout of one animal over 6 frames, `(x, y, z)` in cm.
 The **Clean** tab, left of Clustering, cleans the tracked positions before anything else uses them:
 the 3D view, kinematics, clustering and every export then work on the cleaned data. It is off
 until you press Apply ("Use raw data" goes back). Exports record the settings under
-`preprocessing`, and `etho.py` cleans new data the same way before applying a model
-(`etho.clean_pose`; the code is `viewer/pose_clean.js`). Four steps, joint by joint:
+`preprocessing`, and `poser.py` cleans new data the same way before applying a model
+(`poser.clean_pose`; the code is `viewer/pose_clean.js`). Four steps, joint by joint:
 
 | step | option (default) | what it does |
 |---|---|---|
@@ -351,7 +351,7 @@ equal variance: each sample's variance counts by its nearest neighbour's field w
 frames dominate the estimate. Alone, the field already sends the others to about 0 and the own pose
 is nearly all of the features; in contact the two count 50/50. The own block is never rescaled, so
 poses rebuilt from the PCs need no correction, and the export stores β (`features.others_scale`) so
-`etho.py` applies the same factor to new data. The Weights panel shows β and the variance split
+`poser.py` applies the same factor to new data. The Weights panel shows β and the variance split
 overall and in contact; the checkbox turns the balance off (β = 1).
 
 How it plays out depends on the group. With two mice the single neighbour is turned up (β 2.4 in
@@ -669,7 +669,7 @@ between frames, in the animal's own frame:
 | **flow fields by state** | the fitted field, bouts and fixed point of each state (section 8) |
 | **prototypes** | each state as a smoothed real bout, or as the rollout of its flow field |
 | **reconstruction ghost** | the skeleton rebuilt from the first q PCs, over or beside the original |
-| **Clusters (.json)** | `etho-clusters` 1.0: labels, bouts, PC scores, model (A, b, Σ, P, fixed points), PCA loadings, feature settings including the proximity kernel ([spec](viewer/CLUSTER_FORMAT.md)) |
+| **Clusters (.json)** | `poser-clusters` 1.0: labels, bouts, PC scores, model (A, b, Σ, P, fixed points), PCA loadings, feature settings including the proximity kernel ([spec](viewer/CLUSTER_FORMAT.md)) |
 | **Labels (.csv)** | `animal_id, animal, frame, time_s, state` |
 | **Summary report (.pdf)** | ethogram, time budget, bouts, transitions, PCA, per-state movement and social measures, average poses, a plain-language summary per state |
 | **Analysis notebook (.zip)** | the same summaries as a Jupyter notebook, with the clusters and pose files beside it |
@@ -718,5 +718,5 @@ datasets in the viewer:
 | `examples/mouse_group_blocks.json` | four mice in an open field with blocks: 11 kinds of interaction, climbing, noise and missing data |
 
 The datasets come from the scripts in `examples/generators/` (deterministic: rerunning them rewrites
-the same files). The tests run with `python tests/test_etho.py` (numpy, pandas; the clean-up test
+the same files). The tests run with `python tests/test_poser.py` (numpy, pandas; the clean-up test
 also replays the four-mouse generator for its noise-free scene).

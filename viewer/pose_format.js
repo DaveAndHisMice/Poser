@@ -1,5 +1,5 @@
 /*
- * etho-pose: a standard container for pose data over time (spec: viewer/POSE_FORMAT.md).
+ * poser-pose: a standard container for pose data over time (spec: viewer/POSE_FORMAT.md).
  *
  * Handles anything from a single animal's 2D centroid to groups of animals with 3D skeletons,
  * with zero or more videos. Exposes `PoseFormat` (browser global, or module.exports under Node):
@@ -12,7 +12,7 @@
 (function (root) {
   'use strict';
 
-  const FORMAT = 'etho-pose';
+  const FORMAT = 'poser-pose';
   const VERSION = '1.0';
 
   const isObj = (x) => x !== null && typeof x === 'object' && !Array.isArray(x);
@@ -204,6 +204,7 @@
   }
 
   const LEGACY = new Set(['pose-testset', 'quadruped-skeleton-testset']);
+  const RENAMED = new Set(['etho-pose']);   // the same format under the project's earlier name
 
   // ---------- entry point ----------
   function load(input, opts = {}) {
@@ -214,6 +215,7 @@
     if (!isObj(obj)) throw new Error('The file is not a JSON object.');
     let ds;
     if (obj.format === FORMAT) ds = obj;
+    else if (RENAMED.has(obj.format)) ds = { ...obj, format: FORMAT };
     else if (LEGACY.has(obj.format)) ds = fromLegacy(obj);
     else throw new Error(`Unrecognized format ${JSON.stringify(obj.format)}. Expected "${FORMAT}" or a legacy pose-testset file.`);
     if (!Array.isArray(ds.videos)) ds.videos = [];

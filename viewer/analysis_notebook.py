@@ -18,7 +18,7 @@ if 'POSE_PATH' not in globals():          # running as a plain script (testing)
 
 # %% [markdown]
 # ## 1. Setup
-# Loads the pose data (etho-pose 1.x) and the clustering output (etho-clusters 1.x), rebuilds each
+# Loads the pose data (poser-pose 1.x) and the clustering output (poser-clusters 1.x), rebuilds each
 # animal's pose for the clustered clip, and computes the per-frame measures used below.
 
 # %%
@@ -52,8 +52,8 @@ with open(POSE_PATH) as f:
     pose = json.load(f)
 with open(CLUSTERS_PATH) as f:
     cl = json.load(f)
-assert pose.get('format') == 'etho-pose', 'POSE_PATH is not an etho-pose file'
-assert cl.get('format') == 'etho-clusters', 'CLUSTERS_PATH is not an etho-clusters file'
+assert pose.get('format') in ('poser-pose', 'etho-pose'), 'POSE_PATH is not a poser-pose file'          # etho-*: earlier name
+assert cl.get('format') in ('poser-clusters', 'etho-clusters'), 'CLUSTERS_PATH is not a poser-clusters file'
 
 src = cl['source']
 clip = pose['clips'][src['clip']['index']]

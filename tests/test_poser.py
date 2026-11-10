@@ -1,6 +1,6 @@
-"""Tests for etho.py against the viewer's own export (examples/mouse_social_analysis/).
+"""Tests for poser.py against the viewer's own export (examples/mouse_social_analysis/).
 
-Run with `python tests/test_etho.py` (or pytest). Needs numpy and pandas.
+Run with `python tests/test_poser.py` (or pytest). Needs numpy and pandas.
 """
 import copy
 import json
@@ -14,13 +14,13 @@ import numpy as np
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / 'api'))
-import etho  # noqa: E402
+import poser  # noqa: E402
 
 ROOT = HERE.parent
 DATA = ROOT / 'examples' / 'mouse_social_analysis'
 POSE = json.loads((DATA / 'mouse_social_pose.json').read_text())
 CLUSTERS = json.loads((DATA / 'mouse_social_clusters.json').read_text())
-MODEL = etho.Model.load(CLUSTERS)
+MODEL = poser.Model.load(CLUSTERS)
 VIEWER_LABELS = np.array([a['labels'] for a in CLUSTERS['animals']])
 
 
@@ -35,8 +35,8 @@ def test_model_file_roundtrip():
     with tempfile.TemporaryDirectory() as d:
         MODEL.save(Path(d) / 'm.json')
         spec = json.loads((Path(d) / 'm.json').read_text())
-        assert spec['format'] == 'etho-model' and 'animals' not in spec
-        assert (etho.Model.load(Path(d) / 'm.json').apply(POSE).labels == VIEWER_LABELS).all()
+        assert spec['format'] == 'poser-model' and 'animals' not in spec
+        assert (poser.Model.load(Path(d) / 'm.json').apply(POSE).labels == VIEWER_LABELS).all()
 
 
 def test_units_joint_order_and_extra_joints():
@@ -86,7 +86,7 @@ def test_rejects_mismatched_data():
     raw = copy.deepcopy(CLUSTERS)
     raw['reduction']['method'] = 'none'
     try:
-        etho.Model(raw).apply(POSE)
+        poser.Model(raw).apply(POSE)
     except ValueError as e:
         assert 'raw features' in str(e)
     else:
@@ -102,16 +102,16 @@ def test_tables_and_clusters_export():
     ss = r.state_summary()
     assert abs(ss.loc['S1', 'speed (cm/s)'] - 4.600) < 0.01  # same as the analysis notebook
     out = r.to_clusters()
-    assert out['format'] == 'etho-clusters'
+    assert out['format'] == 'poser-clusters'
     assert [b['state'] for b in out['animals'][0]['bouts']] == [b['state'] for b in CLUSTERS['animals'][0]['bouts']]
 
 
 def _other_block_weight(feat):
     """Per-row weight of the other-animal block: weighted features / unweighted features."""
     nodes = feat['nodes']
-    _, P = etho._tracks(POSE, 0, nodes, 'm')
-    X = etho._features(P, feat, 3)
-    X1 = etho._features(P, dict(feat, proximity_kernel=None), 3)
+    _, P = poser._tracks(POSE, 0, nodes, 'm')
+    X = poser._features(P, feat, 3)
+    X1 = poser._features(P, dict(feat, proximity_kernel=None), 3)
     d = X.shape[1] // 2
     big = np.abs(X1[:, d:]).argmax(1)                  # the largest unweighted entry of each row
     rows = np.arange(len(X))
@@ -139,14 +139,14 @@ def test_elliptical_field():
     # side reach 1 with 2D distance is the old isotropic kernel, and the default for older files
     old = dict(base, proximity_kernel={x: v for x, v in k.items() if x != 'lateral_scale'})
     new = dict(base, distance_dims=2, proximity_kernel=dict(k, lateral_scale=1.0, dims=2))
-    _, P = etho._tracks(POSE, 0, nodes, 'm')
-    assert np.array_equal(etho._features(P, old, 3), etho._features(P, new, 3))
+    _, P = poser._tracks(POSE, 0, nodes, 'm')
+    assert np.array_equal(poser._features(P, old, 3), poser._features(P, new, 3))
 
 
 def test_others_scale():
     feat = dict(CLUSTERS['features'], align_others=False)
-    _, P = etho._tracks(POSE, 0, feat['nodes'], 'm')
-    X1, X3 = etho._features(P, feat, 3), etho._features(P, dict(feat, others_scale=3.0), 3)
+    _, P = poser._tracks(POSE, 0, feat['nodes'], 'm')
+    X1, X3 = poser._features(P, feat, 3), poser._features(P, dict(feat, others_scale=3.0), 3)
     d = X1.shape[1] // 2
     assert np.array_equal(X1[:, :d], X3[:, :d])            # own pose untouched
     assert np.allclose(X3[:, d:], 3 * X1[:, d:])
@@ -156,8 +156,8 @@ CLEAN = {'swaps': True, 'outliers': {'window': 7, 'threshold': 5}, 'fill': 'body
 
 
 def test_model_cleans_new_data_like_its_training_data():
-    model = etho.Model(dict(CLUSTERS, preprocessing=CLEAN))
-    cleaned = etho.clean_pose(POSE, CLEAN)
+    model = poser.Model(dict(CLUSTERS, preprocessing=CLEAN))
+    cleaned = poser.clean_pose(POSE, CLEAN)
     assert cleaned['meta']['cleaned'] == CLEAN
     assert all(q is not None for t in cleaned['clips'][0]['tracks'].values() for fr in t['positions'] for q in fr)
     r = model.apply(POSE)                              # raw file: cleaned first
@@ -177,21 +177,21 @@ def test_clean_up_brings_noisy_group_closer_to_truth():
     lifted = [G.lift(f)[0] for f in flat]
     lifted[2] = G.lift(flat[2], G.back_bump(lifted[3], G.W(11.2, 12.6, 0.1)))[0]
     truth = np.stack(lifted)
-    raw = etho.load_pose(root / 'mouse_group_blocks.json')
+    raw = poser.load_pose(root / 'mouse_group_blocks.json')
     names = [j['name'] for j in raw['skeletons']['mouse']['joints']]
 
     def errors(pose):
-        _, P = etho._tracks(pose, 0, names, 'm')              # gaps filled linearly, like the viewer
+        _, P = poser._tracks(pose, 0, names, 'm')              # gaps filled linearly, like the viewer
         P = P[..., [0, 1, 2]]                                  # already Y up
         pos = np.sqrt((np.linalg.norm(P - truth, axis=-1) ** 2).mean())
         vel = np.sqrt((np.linalg.norm(np.diff(P, axis=1) - np.diff(truth, axis=1), axis=-1) ** 2).mean())
         return pos, vel
-    (p0, v0), (p1, v1) = errors(raw), errors(etho.clean_pose(raw, CLEAN))
+    (p0, v0), (p1, v1) = errors(raw), errors(poser.clean_pose(raw, CLEAN))
     assert p1 < 0.85 * p0 and v1 < 0.6 * v0, (p0, p1, v0, v1)
 
 
 def test_analysis_notebook_runs_on_applied_result():
-    # the result file is a normal etho-clusters export: the viewer's analysis notebook reads it
+    # the result file is a normal poser-clusters export: the viewer's analysis notebook reads it
     r = MODEL.apply(POSE)
     with tempfile.TemporaryDirectory() as d:
         r.save(Path(d) / 'c.json')

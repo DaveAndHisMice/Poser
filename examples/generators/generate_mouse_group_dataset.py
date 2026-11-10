@@ -1,7 +1,7 @@
 """
 Synthesize a noisy 3D dataset of four mice in an open field with blocks they climb.
 
-Writes mouse_group_blocks.json (etho-pose 1.0, see viewer/POSE_FORMAT.md) next to this script.
+Writes examples/mouse_group_blocks.json (poser-pose 1.0, see viewer/POSE_FORMAT.md).
 
 Scene: an 80 cm open field with three blocks (a 3.5 cm platform, a 5.5 cm tall block and a 2.5 cm
 step bar). Four mice spend 60 s starting and ending in a huddle, and in between show as many kinds
@@ -584,7 +584,7 @@ def main():
         tracks[ids[a]] = {"positions": frames}
     skel = g.skeleton_block(g.MOUSE_JOINTS, clean[0, 0])
     data = {
-        "format": "etho-pose",
+        "format": "poser-pose",
         "version": "1.0",
         "meta": {
             "name": "four mice, open field with blocks",

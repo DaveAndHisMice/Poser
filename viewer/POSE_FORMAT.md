@@ -1,4 +1,7 @@
-# etho-pose 1.0 — pose data format
+# poser-pose 1.0 — pose data format
+
+Files saying `"format": "etho-pose"` (the project's earlier name) are the same format; the viewer and
+`poser.py` read them unchanged.
 
 One JSON file holds one dataset: any number of animals, each tracked with some skeleton (a
 single centroid point up to a full 3D skeleton), over one or more clips, with zero or more
@@ -10,7 +13,7 @@ files (`examples/mouse_*.json`, `examples/skeleton_dataset.json`).
 
 ```jsonc
 {
-  "format": "etho-pose",        // required, exactly this
+  "format": "poser-pose",        // required, exactly this
   "version": "1.0",             // required; readers accept any 1.x
   "meta":      { ... },         // optional, free-form description
   "space":     { ... },         // required, coordinate frame
@@ -106,7 +109,7 @@ Simplest case, one animal's 2D centroid with no video:
 
 ```json
 {
-  "format": "etho-pose", "version": "1.0",
+  "format": "poser-pose", "version": "1.0",
   "space": { "dims": 2, "units": "m", "view": "top-down" },
   "skeletons": { "point": { "joints": [{ "name": "centroid", "parent": null }] } },
   "animals": [{ "id": "m1", "skeleton": "point" }],
@@ -121,7 +124,7 @@ A group with 3D skeletons and two cameras (abridged):
 
 ```jsonc
 {
-  "format": "etho-pose", "version": "1.0",
+  "format": "poser-pose", "version": "1.0",
   "space": { "dims": 3, "units": "m", "up": "+Z" },
   "skeletons": { "mouse18": { "joints": [ /* 18 joints */ ], "bones": [ /* ... */ ] } },
   "animals": [

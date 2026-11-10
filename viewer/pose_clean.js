@@ -1,5 +1,5 @@
 /*
- * Pose clean-up for etho-pose datasets (the viewer's Clean tab).
+ * Pose clean-up for poser-pose datasets (the viewer's Clean tab).
  *
  *   PoseClean.clean(dataset, options) -> { dataset, report }
  *
@@ -23,7 +23,7 @@
  *   4. smoothing          none, moving median (window frames) or Gaussian (sigma frames), per
  *                         coordinate; windows are truncated at the ends of the clip.
  * Steps 1, 2 and 4 can be switched off; with everything off the result equals the viewer's own
- * gap filling. api/etho.py (clean_pose) implements the same steps, so a model trained on cleaned
+ * gap filling. api/poser.py (clean_pose) implements the same steps, so a model trained on cleaned
  * data is applied to new data cleaned the same way.
  */
 (function (root) {

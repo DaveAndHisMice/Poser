@@ -1,12 +1,12 @@
 // Behaviour summary report (PDF).
 //
-// EthoReport.build(pose, clusters, { jsPDF }) turns an etho-pose dataset and an etho-clusters export
+// PoserReport.build(pose, clusters, { jsPDF }) turns a poser-pose dataset and a poser-clusters export
 // into a jsPDF document: the same analysis as the Jupyter notebook template (analysis_notebook.py),
 // drawn as vector figures with a short text description of each result. It reads only the two
 // exported objects, so it can also run outside the viewer (e.g. Node with the jspdf package).
 // build_viewer.py inlines this file into the viewer page; the page loads jsPDF from a CDN on demand.
 //
-// EthoReport.analyze(pose, clusters) returns the numbers alone (per-frame measures, time budget,
+// PoserReport.analyze(pose, clusters) returns the numbers alone (per-frame measures, time budget,
 // bouts, transitions, PCA summary, per-state medians and z-scores, average poses).
 (function (root) {
   'use strict';
@@ -65,8 +65,9 @@
 
   // ---------- analysis: a port of the notebook template ----------
   function analyze(pose, cl) {
-    if (!pose || pose.format !== 'etho-pose') throw new Error('not an etho-pose dataset');
-    if (!cl || cl.format !== 'etho-clusters') throw new Error('not an etho-clusters export');
+    // etho-*: the same formats under the project's earlier name
+    if (!pose || !['poser-pose', 'etho-pose'].includes(pose.format)) throw new Error('not a poser-pose dataset');
+    if (!cl || !['poser-clusters', 'etho-clusters'].includes(cl.format)) throw new Error('not a poser-clusters export');
     const src = cl.source, clip = pose.clips[src.clip.index];
     const fps = Number(clip.fps), nF = Number(clip.frame_count);
     const model = cl.model, states = model.states, K = states.length;
@@ -557,7 +558,7 @@
     g.font(20, 'bold'); g.text('Behaviour summary', g.M, g.y + 18); g.y += 28;
     g.font(12, 'normal', MUTED); g.text(`${dsName}${pose.clips.length > 1 ? `  ·  clip "${clipName}"` : ''}`, g.M, g.y + 10); g.y += 18;
     g.font(8.5, 'normal', MUTED);
-    g.text(`Generated ${options.date || new Date().toISOString().slice(0, 10)} from the Pose Dataset Viewer's clustering export${R.cl.created ? ` (${R.cl.created.slice(0, 16).replace('T', ' ')} UTC)` : ''}.`, g.M, g.y + 8);
+    g.text(`Generated ${options.date || new Date().toISOString().slice(0, 10)} from Poser's clustering export${R.cl.created ? ` (${R.cl.created.slice(0, 16).replace('T', ' ')} UTC)` : ''}.`, g.M, g.y + 8);
     g.y += 20;
     if (pose.meta && pose.meta.description) paragraph(g, pose.meta.description, { size: 9, color: MUTED, after: 8 });
 
@@ -922,7 +923,7 @@
       g.font(9.5); lines.forEach((ln, i) => { doc.text(ln, g.M + 34, g.y + 9.5 * 0.8 + i * lh); });
       g.y += lh * lines.length + 6;
     });
-    note(g, 'All numbers are recomputed from the exported pose data and clustering output (etho-pose and etho-clusters files); missing pose samples are linearly interpolated. Lengths are in ' + LEN + '.');
+    note(g, 'All numbers are recomputed from the exported pose data and clustering output (poser-pose and poser-clusters files); missing pose samples are linearly interpolated. Lengths are in ' + LEN + '.');
 
     // footers
     const n = doc.getNumberOfPages();
@@ -935,6 +936,6 @@
     return doc;
   }
 
-  root.EthoReport = { analyze, build };
-  if (typeof module !== 'undefined' && module.exports) module.exports = root.EthoReport;
+  root.PoserReport = { analyze, build };
+  if (typeof module !== 'undefined' && module.exports) module.exports = root.PoserReport;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

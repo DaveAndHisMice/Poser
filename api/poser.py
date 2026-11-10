@@ -1,24 +1,24 @@
-"""etho: apply a behaviour clustering made in the Pose Dataset Viewer to new pose data.
+"""poser: apply a behaviour clustering made in the Poser viewer to new pose data.
 
-The viewer's "Export script" saves a clustering run as an etho-model file: the feature settings
+The viewer's "Export script" saves a clustering run as a poser-model file: the feature settings
 (ego or social, removed nodes, body axis, proximity field), the PCA (mean and loadings)
 and the switching linear dynamics model (each state's flow field and noise, the transition matrix).
-This module rebuilds the same features from any etho-pose dataset with the same skeleton, projects
+This module rebuilds the same features from any poser-pose dataset with the same skeleton, projects
 them onto the same principal components and segments them with the same model (Viterbi), so a state
 means the same behaviour in every dataset it is applied to.
 
-    import etho
-    model = etho.Model.load('mice_model.json')     # an etho-model or etho-clusters file
-    result = model.apply('new_session.json')       # an etho-pose file (or the parsed dict)
+    import poser
+    model = poser.Model.load('mice_model.json')     # a poser-model or poser-clusters file
+    result = model.apply('new_session.json')       # a poser-pose file (or the parsed dict)
     result.time_budget()                           # pandas tables, see Result
-    result.save('new_session_clusters.json')       # etho-clusters 1.0, like the viewer's export
+    result.save('new_session_clusters.json')       # poser-clusters 1.0, like the viewer's export
 
 If the model was trained on data cleaned in the viewer's Clean tab, new data is cleaned the same way
 first (clean_pose; skipped for files that are already cleaned). The model is applied, not refit: new data gets the trained states and transition probabilities.
 Only models fit on PCA scores can be applied (the viewer's default); models fit on raw features do
 not store what is needed.
 
-Formats: etho-pose (viewer/POSE_FORMAT.md), etho-clusters and etho-model (viewer/CLUSTER_FORMAT.md).
+Formats: poser-pose (viewer/POSE_FORMAT.md), poser-clusters and poser-model (viewer/CLUSTER_FORMAT.md).
 Needs numpy; the tables need pandas.
 """
 from __future__ import annotations
@@ -48,13 +48,13 @@ def _load_json(src):
 
 
 def load_pose(src):
-    """An etho-pose dataset from a path or an already parsed dict.
+    """A poser-pose dataset from a path or an already parsed dict.
 
     Legacy pose-testset files are not converted here: open them in the viewer, which converts them.
     """
     ds = _load_json(src)
-    if ds.get('format') != 'etho-pose':
-        raise ValueError(f"not an etho-pose dataset (format = {ds.get('format')!r})")
+    if ds.get('format') not in ('poser-pose', 'etho-pose'):           # etho-*: the project's earlier name
+        raise ValueError(f"not a poser-pose dataset (format = {ds.get('format')!r})")
     return ds
 
 
@@ -223,7 +223,7 @@ def _smooth_series(v, method, size):
 
 
 def clean_pose(pose, settings):
-    """A cleaned copy of an etho-pose dataset (the viewer's Clean tab; see viewer/pose_clean.js).
+    """A cleaned copy of a poser-pose dataset (the viewer's Clean tab; see viewer/pose_clean.js).
 
     settings, as stored in exports under `preprocessing`: {swaps: bool, outliers: {window, threshold}
     or None, fill: 'linear' | 'cubic' | 'body', smooth: {method: 'gaussian' | 'median', size} or None}.
@@ -412,12 +412,12 @@ def _features(P, feat, dims):
 class Model:
     """A clustering run from the viewer: feature settings, PCA and switching linear dynamics.
 
-    Load it from an etho-model file (Export script) or an etho-clusters file (Clusters .json).
+    Load it from a poser-model file (Export script) or a poser-clusters file (Clusters .json).
     """
 
     def __init__(self, spec):
-        if spec.get('format') not in ('etho-model', 'etho-clusters'):
-            raise ValueError(f"not an etho-model or etho-clusters file (format = {spec.get('format')!r})")
+        if spec.get('format') not in ('poser-model', 'poser-clusters', 'etho-model', 'etho-clusters'):
+            raise ValueError(f"not a poser-model or poser-clusters file (format = {spec.get('format')!r})")
         self.spec = {k: v for k, v in spec.items() if k != 'animals'}
         self.features = spec['features']
         self.reduction = spec['reduction']
@@ -434,13 +434,13 @@ class Model:
         return cls(_load_json(src))
 
     def save(self, path):
-        """Write the etho-model file (settings, PCA and dynamics; no per-frame data)."""
-        spec = dict(self.spec, format='etho-model', version='1.0')
+        """Write the poser-model file (settings, PCA and dynamics; no per-frame data)."""
+        spec = dict(self.spec, format='poser-model', version='1.0')
         Path(path).write_text(json.dumps(spec))
 
     def __repr__(self):
         f, r = self.features, self.reduction
-        return (f"<etho.Model: {self.k} states, {f['mode']} features on {len(f['nodes'])} nodes, "
+        return (f"<poser.Model: {self.k} states, {f['mode']} features on {len(f['nodes'])} nodes, "
                 f"{r['n_components']} {'PCs' if r['method'] == 'pca' else 'raw features'}, "
                 f"trained on {self.spec.get('source', {}).get('dataset', '?')}>")
 
@@ -450,7 +450,7 @@ class Model:
 
     # -- the pipeline, step by step --
     def feature_matrix(self, pose, clip=0):
-        """(animals, feature matrix with one row per animal per frame) for one clip of an etho-pose dataset."""
+        """(animals, feature matrix with one row per animal per frame) for one clip of a poser-pose dataset."""
         pose = load_pose(pose)
         if int(pose['space']['dims']) != int(self.space['dims']):
             raise ValueError(f"the model is {self.space['dims']}D, the data {pose['space']['dims']}D")
@@ -511,7 +511,7 @@ class Model:
         return pose
 
     def apply(self, pose, clip=0):
-        """Run the whole pipeline on one clip of an etho-pose dataset: clean-up, features, PCs, states."""
+        """Run the whole pipeline on one clip of a poser-pose dataset: clean-up, features, PCs, states."""
         pose = self.prepare(pose)
         ci = _clip_index(pose, clip)
         animals, X = self.feature_matrix(pose, ci)
@@ -538,7 +538,7 @@ class Result:
         self.n_frames = labels.shape[1]
 
     def __repr__(self):
-        return (f"<etho.Result: {self.pose.get('meta', {}).get('name', 'dataset')} · clip {self.clip.get('name', self.clip_index)}, "
+        return (f"<poser.Result: {self.pose.get('meta', {}).get('name', 'dataset')} · clip {self.clip.get('name', self.clip_index)}, "
                 f"{len(self.animals)} animal(s) x {self.n_frames} frames, {self.model.k} states>")
 
     def _names(self):
@@ -639,7 +639,7 @@ class Result:
 
     # -- export --
     def to_clusters(self):
-        """This result as an etho-clusters 1.0 dict (same layout as the viewer's Clusters export)."""
+        """This result as a poser-clusters 1.0 dict (same layout as the viewer's Clusters export)."""
         spec, k, nF = self.model.spec, self.model.k, self.n_frames
         bl, total = self.bout_list(), self.labels.size
         states = []
@@ -650,9 +650,9 @@ class Result:
         rnd = lambda v: float(f'{v:.6g}')
         model = dict(spec['model'], states=states)
         return {
-            'format': 'etho-clusters', 'version': '1.0',
+            'format': 'poser-clusters', 'version': '1.0',
             'created': datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
-            'generator': f'etho.py {__version__} (model applied, not refit)',
+            'generator': f'poser.py {__version__} (model applied, not refit)',
             'source': {'dataset': self.pose.get('meta', {}).get('name'), 'file': None,
                        'clip': {'index': self.clip_index, 'name': self.clip.get('name'), 'fps': self.fps,
                                 'frame_count': nF, 'loop': bool(self.clip.get('loop'))}},

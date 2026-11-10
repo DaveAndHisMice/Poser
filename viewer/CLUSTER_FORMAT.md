@@ -1,10 +1,13 @@
-# etho-clusters 1.0 — clustering output format
+# poser-clusters 1.0 — clustering output format
+
+Files saying `"format": "etho-clusters"` or `"etho-model"` (the project's earlier name) are the same
+formats; the viewer's report, the notebook and `poser.py` read them unchanged.
 
 One JSON file holds the result of one clustering run of the pose viewer on one clip: every animal's
 state in every frame, its bouts and its position in PC space, plus everything needed to interpret
 the states (the model, the reduction and the input features). The viewer writes it with
 **Export → Clusters (.json)**; the analysis notebook export ships it next to the pose data
-(etho-pose, see `POSE_FORMAT.md`).
+(poser-pose, see `POSE_FORMAT.md`).
 
 State ids are **1-based** everywhere (state 1 = "Cluster 1" in the viewer). Frame indices are
 **0-based** within the clip. Lengths are in `space.units` (default metres) unless noted.
@@ -13,10 +16,10 @@ State ids are **1-based** everywhere (state 1 = "Cluster 1" in the viewer). Fram
 
 ```jsonc
 {
-  "format": "etho-clusters",       // exactly this
+  "format": "poser-clusters",       // exactly this
   "version": "1.0",                // readers accept any 1.x
   "created": "2026-11-08T15:04:05Z",
-  "generator": "Pose Dataset Viewer",
+  "generator": "Poser",
   "source":    { ... },            // which data was clustered
   "space":     { "dims": 3, "units": "m" },
   "features":  { ... },            // what went into the model
@@ -29,7 +32,7 @@ State ids are **1-based** everywhere (state 1 = "Cluster 1" in the viewer). Fram
 ### `preprocessing`
 `null`, or the settings of the viewer's Clean tab when the data was cleaned before clustering:
 `{swaps: bool, outliers: {window, threshold} | null, fill: "linear" | "cubic" | "body", smooth:
-{method: "gaussian" | "median", size} | null}`. `etho.py` (`clean_pose`) cleans new data with the same
+{method: "gaussian" | "median", size} | null}`. `poser.py` (`clean_pose`) cleans new data with the same
 settings before applying the model; a pose file whose `meta.cleaned` is set (the viewer's exports
 of cleaned data) is not cleaned again.
 
@@ -54,7 +57,7 @@ origin, body axis forward).
 | `align_others` | bool, optional | **older files only.** `true`: each other animal was rotated about the focal centroid onto the body axis (in front or behind). The viewer no longer offers this (an animal beside the focal one flipped between front and behind); absent means no rotation |
 | `proximity_kernel` | object \| null | social: `{type: "gaussian", d0, d0_body_lengths, lateral_scale, dims, distance}`; each other animal scaled by w = exp(−½ [(f² + h²)/d0² + l²/(lateral_scale·d0)²]), a Gaussian field centred on the focal centroid, where f, l are the other centroid's offset along and across the focal body axis and h their height difference (only when `dims` is 3). `lateral_scale` 1 (or absent, older files) is the isotropic exp(−½ (d/d0)²) on the centroid distance d |
 | `others_scale` | number, optional | social: every other-animal block multiplied by this β, on top of the proximity kernel (own pose stays at 1). Absent = 1 |
-| `others_balance` | string, optional | social: present when β was computed by the viewer's balance (own pose and others 50/50 in contact, variances weighted by each sample's nearest-neighbour field weight); `etho.py` applies the stored β, it does not recompute it |
+| `others_balance` | string, optional | social: present when β was computed by the viewer's balance (own pose and others 50/50 in contact, variances weighted by each sample's nearest-neighbour field weight); `poser.py` applies the stored β, it does not recompute it |
 | `distance_dims` | 2 \| 3 | social: dimensions of the centroid distance used for the kernel and for ordering other animals nearest-first |
 | `body_length` | number | the length unit `d0_body_lengths` refers to |
 | `feature_names` | `[string]` | one per feature column: `own/<node>/<axis>` or `other<i>/<node>/<axis>` |
@@ -113,19 +116,19 @@ the embedding are still complete.
 | `bouts` | `[{state, start, end, duration_s}]` | unbroken runs of one state; `start`/`end` inclusive frame indices |
 | `embedding` | `[[number]]` | `frame_count` rows of `embedding_components` PC scores |
 
-## etho-model 1.0
+## poser-model 1.0
 **Export → Export script (.zip)** writes `<name>_model.json`: the same object without `animals`
-(no per-frame data), with `"format": "etho-model"`. It holds everything needed to apply the run to new
+(no per-frame data), with `"format": "poser-model"`. It holds everything needed to apply the run to new
 pose data: `features` (how each sample is built), `reduction` (`mean`, `loadings`) and `model` (the
 states' `A`, `b`, `noise_cov`, `transition_matrix`, `initial_distribution`). Only runs with
-`reduction.method: "pca"` can be applied. The zip also holds `etho.py`, the Python API
-(`api/etho.py` in the repository), and a one-cell notebook:
+`reduction.method: "pca"` can be applied. The zip also holds `poser.py`, the Python API
+(`api/poser.py` in the repository), and a one-cell notebook:
 
 ```python
-import etho
-model = etho.Model.load('session_model.json')   # etho-model or etho-clusters
-result = model.apply('new_session.json')         # etho-pose, same skeleton (social: same number of animals)
-result.save('new_session_clusters.json')         # etho-clusters 1.0
+import poser
+model = poser.Model.load('session_model.json')   # poser-model or poser-clusters
+result = model.apply('new_session.json')         # poser-pose, same skeleton (social: same number of animals)
+result.save('new_session_clusters.json')         # poser-clusters 1.0
 result.state_summary()                           # also time_budget(), bout_stats(), transitions(), bouts(), measures()
 ```
 

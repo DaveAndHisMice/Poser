@@ -1,7 +1,7 @@
 """
 Synthesize ideal (noise-free) mouse pose test datasets.
 
-Writes, next to this script:
+Writes, into examples/ (the folder above this script):
   mouse_centroid.json  2D centroid only: one (x, y) point per frame on the floor.
   mouse_3d.json        3D skeleton that runs around and rears on its hind legs.
   mouse_2d.json        2D top-down skeleton that runs around.
