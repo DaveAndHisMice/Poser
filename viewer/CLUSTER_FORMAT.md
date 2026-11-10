@@ -26,6 +26,13 @@ State ids are **1-based** everywhere (state 1 = "Cluster 1" in the viewer). Fram
 }
 ```
 
+### `preprocessing`
+`null`, or the settings of the viewer's Clean tab when the data was cleaned before clustering:
+`{swaps: bool, outliers: {window, threshold} | null, fill: "linear" | "cubic" | "body", smooth:
+{method: "gaussian" | "median", size} | null}`. `etho.py` (`clean_pose`) cleans new data with the same
+settings before applying the model; a pose file whose `meta.cleaned` is set (the viewer's exports
+of cleaned data) is not cleaned again.
+
 ### `source`
 | field | type | |
 |---|---|---|
@@ -46,7 +53,8 @@ origin, body axis forward).
 | `egocentric_axis` | object | `anterior`, `posterior`: the nodes defining the body axis |
 | `align_others` | bool, optional | **older files only.** `true`: each other animal was rotated about the focal centroid onto the body axis (in front or behind). The viewer no longer offers this (an animal beside the focal one flipped between front and behind); absent means no rotation |
 | `proximity_kernel` | object \| null | social: `{type: "gaussian", d0, d0_body_lengths, lateral_scale, dims, distance}`; each other animal scaled by w = exp(−½ [(f² + h²)/d0² + l²/(lateral_scale·d0)²]), a Gaussian field centred on the focal centroid, where f, l are the other centroid's offset along and across the focal body axis and h their height difference (only when `dims` is 3). `lateral_scale` 1 (or absent, older files) is the isotropic exp(−½ (d/d0)²) on the centroid distance d |
-| `others_scale` | number, optional | social: every other-animal block multiplied by this, on top of the proximity kernel ("Others vs own"; own pose stays at 1). Absent = 1 |
+| `others_scale` | number, optional | social: every other-animal block multiplied by this β, on top of the proximity kernel (own pose stays at 1). Absent = 1 |
+| `others_balance` | string, optional | social: present when β was computed by the viewer's balance (own pose and others 50/50 in contact, variances weighted by each sample's nearest-neighbour field weight); `etho.py` applies the stored β, it does not recompute it |
 | `distance_dims` | 2 \| 3 | social: dimensions of the centroid distance used for the kernel and for ordering other animals nearest-first |
 | `body_length` | number | the length unit `d0_body_lengths` refers to |
 | `feature_names` | `[string]` | one per feature column: `own/<node>/<axis>` or `other<i>/<node>/<axis>` |
@@ -76,7 +84,7 @@ Switching linear dynamics (an autoregressive HMM) in the model space: in state *
 | `k`, `k_auto` | int | states used, and the k with the lowest BIC (they differ if k was picked by hand) |
 | `criterion` | `"BIC"` | |
 | `k_selection` | `[{k, bic}]` | every k that was fit |
-| `hyperparameters` | object | `k_min`, `k_max`, `stickiness`, `max_em_iterations`; plus `optimized` when **Optimize rsLDS** chose stickiness and iterations: `{criterion: "most stable states", stickiness, iterations, stable_states, stability, settings_tried}` |
+| `hyperparameters` | object | `k_min`, `k_max`, `stickiness`, `max_em_iterations`; plus `optimized` when **Optimize rsLDS** chose the settings: `{criterion, searched: "proximity field" \| "stickiness and EM iterations", reach_body_lengths, side_reach` (field) or `stickiness, iterations` (otherwise)`, one_frame_bouts, stable_frames, stable_states, settings_tried}`. Files from earlier versions have `{criterion: "most stable states", stickiness, iterations, stable_states, stability, settings_tried}` |
 | `log_likelihood_per_step`, `bic`, `em_iterations`, `converged` | | fit of the chosen k |
 | `transition_matrix` | `[[number]]` | k × k, row = from, per frame |
 | `initial_distribution` | `[number]` | k |

@@ -49,6 +49,8 @@ def main():
     assert "</" not in importer  # safe to inline inside <script>
     report = (HERE / "report_pdf.js").read_text(encoding="utf-8")
     assert "</" not in report
+    cleaner = (HERE / "pose_clean.js").read_text(encoding="utf-8")
+    assert "</" not in cleaner
     cells = json.dumps(notebook_cells(HERE / "analysis_notebook.py"))
     assert "</" not in cells     # safe to inline inside <script type="application/json">
     etho_py = json.dumps((HERE.parent / "api" / "etho.py").read_text(encoding="utf-8"))
@@ -57,8 +59,9 @@ def main():
     assert template.count("/*__POSE_FORMAT__*/") == 1
     assert template.count("/*__NOTEBOOK__*/") == 1
     assert template.count("/*__REPORT__*/") == 1
+    assert template.count("/*__POSE_CLEAN__*/") == 1
     assert template.count("/*__ETHO_PY__*/") == 1
-    out.write_text(template.replace("/*__POSE_FORMAT__*/", importer).replace("/*__REPORT__*/", report)
+    out.write_text(template.replace("/*__POSE_FORMAT__*/", importer).replace("/*__REPORT__*/", report).replace("/*__POSE_CLEAN__*/", cleaner)
                    .replace("/*__NOTEBOOK__*/", cells).replace("/*__ETHO_PY__*/", etho_py), encoding="utf-8")
     print(f"wrote {out} ({out.stat().st_size / 1024:.0f} KB)")
 

@@ -164,6 +164,50 @@ Toy example: the snout of one animal over 6 frames, `(x, y, z)` in cm.
 > Interpolation fills a short dropout well. A long one becomes a straight-line glide, which the
 > dynamics model will treat as real (smooth, slow) movement. Watch the fill count the viewer reports.
 
+### Optional clean-up (the Clean tab)
+
+The **Clean** tab, left of Clustering, cleans the tracked positions before anything else uses them:
+the 3D view, kinematics, clustering and every export then work on the cleaned data. It is off
+until you press Apply ("Use raw data" goes back). Exports record the settings under
+`preprocessing`, and `etho.py` cleans new data the same way before applying a model
+(`etho.clean_pose`; the code is `viewer/pose_clean.js`). Four steps, joint by joint:
+
+| step | option (default) | what it does |
+|---|---|---|
+| 1 left/right swaps | on | for each `X_L`/`X_R` pair, swaps the two back in frames where **both** sit on the wrong side of the body axis (pelvis → neck, on the floor) by more than a quarter of their usual offset. Which side is left is learned from the clip, and one outlier cannot trigger a swap. |
+| 2 outliers | on, window 7, threshold 5 | Hampel filter: a sample farther from the rolling median of its own track than 5 robust standard deviations (1.4826 × the joint's median distance) is marked missing. |
+| 3 fill gaps | body-relative | linear, cubic, or **body-relative**: the pelvis and neck are filled linearly; every other joint's offset from the pelvis is expressed in the animal's own frame, filled linearly, and placed from that frame's own body, so a long gap follows the animal through turns. |
+| 4 smoothing | Gaussian, σ = 1 frame | Gaussian (σ in frames), moving median (window in frames), or none. |
+
+**Why clean when PCA already reduces noise?** PCA discards only the noise that falls *outside* the
+kept components, and tracking noise does not stay there. The egocentric transform spreads a noisy
+pelvis or neck (heading) over every coordinate, and outliers and swaps are large, structured
+errors. On the four-mouse example, replayed noise-free from its generator, PCA keeps 12 of 216
+dimensions, 96% of the signal **and 75% of the noise**. In the poses themselves that noise is small
+(4% of the signal variance). But the switching linear dynamics models **frame-to-frame steps**, and
+a body moves only a little between frames while white noise is new every frame: in the kept PCs the
+noise in the steps is **1.6 times** the real movement. Cleaning brings that to 0.6 times. Swaps and
+outlier jumps are large single-frame steps that look like state changes, and that is where the
+flicker came from.
+
+Checked on the four-mouse example against the noise-free scene (errors) and the scripted
+behaviours (clustering: social, side reach 0.5, stickiness 0.5, 50 EM iterations):
+
+| data | position error | step error | samples > 2 cm off | one-frame bouts | median bout | NMI |
+|---|---|---|---|---|---|---|
+| raw (linear fill only) | 6.4 mm | 7.8 mm | 559 | 2640 | 1 frame | 0.19 |
+| smoothing only (σ = 1) | 4.9 mm | 3.8 mm | 466 | 412 | 2 frames | 0.21 |
+| full clean-up (defaults) | 4.9 mm | 3.8 mm | 336 | 362 | 3 frames | 0.21 |
+| noise-free scene (ceiling) | 0 | 0 | 0 | 112 | 5 frames | 0.23 |
+
+Cleaning removes 86% of the noise-driven flicker and half of the gap to the noise-free agreement
+with the true behaviours. The rest of that gap is not noise: even the noise-free scene reaches only
+0.23 with these features. Smoothing does most of the work; the swap fix and body-relative filling
+remove most of the remaining gross errors (swapped frames 114 → 28, errors over 2 cm −40%). Wider
+smoothing (σ = 2–3) blurs fast moves and is worse. On the low-noise two-mouse example (2 mm noise)
+cleaning changes little (NMI 0.50 raw, 0.48 cleaned; a few fast fighting moves are flagged as
+outliers), so it pays off on noisy tracking and can be left off on clean data.
+
 ---
 
 ## 3. Centroid and heading
@@ -275,8 +319,9 @@ the focal centroid and read at the other animal's centroid**, in the focal frame
 
  Δforward, Δlateral = the other centroid's offset along and across the focal body axis
  Δh = difference in mean height (3D distance, the default for 3D data; 0 with 2D distance)
- d₀ = reach ahead and behind, in body lengths (nose-to-tail extent of animal 1 in frame 1)
- ρ  = side reach, 0.1–1 (default 0.5): the field reaches ρ·d₀ to the sides
+ d₀ = reach ahead and behind, in body lengths (nose-to-tail extent of animal 1 in frame 1);
+      default 0.35
+ ρ  = side reach, 0.1–1 (default 0.75): the field reaches ρ·d₀ to the sides
 ```
 
 An animal in front of or behind the focal one counts more than one at the same distance beside it,
@@ -286,11 +331,28 @@ mean anything. With ρ = 1 the field is the isotropic Gaussian exp(−½ (d/d₀
 distance d. The 3D distance separates an animal on a block above the focal animal from one beside
 it on the floor; the same distance (2D or 3D) sets the nearest-first order.
 
-**Others vs own.** Finally every other-animal block is multiplied by β (slider 1 : 0.1 to 1 : 10,
-default 1). PCA follows variance, so β sets how much the states are about the social scene versus
-the animal's own posture. With several animals the others can dominate: in `mouse_social` at β = 1
-they carry 83% of the input variance, at β = 0.3 the own pose carries 70%. The Weights panel shows
-this split live. The own block is never rescaled, so poses rebuilt from the PCs need no correction.
+**The default is a contact field** (d₀ = 0.35, ρ = 0.75: about a third of a body length ahead and
+behind, a quarter to the side). In a study of every setting on the four-mouse example (125 clustering runs scored against
+the scripted behaviours) the field's shape mattered
+far more than anything else: this field recovered the scripted behaviours with AMI 0.33 against 0.20
+for the earlier default (d₀ = 1, ρ = 0.5), mainly by finding sniffing, following, side-by-side
+walking and fighting. A wide field lets every animal in the arena into the features, interacting or
+not; the contact field keeps only those in contact. Optimize rsLDS searches d₀ and ρ (section 10).
+
+**Balance between own pose and other animals.** Finally every other-animal block is multiplied by
+one factor β, computed from the data so that **in contact** the own pose and the other animals carry
+equal variance: each sample's variance counts by its nearest neighbour's field weight, so contact
+frames dominate the estimate. Alone, the field already sends the others to about 0 and the own pose
+is nearly all of the features; in contact the two count 50/50. The own block is never rescaled, so
+poses rebuilt from the PCs need no correction, and the export stores β (`features.others_scale`) so
+`etho.py` applies the same factor to new data. The Weights panel shows β and the variance split
+overall and in contact; the checkbox turns the balance off (β = 1).
+
+How it plays out depends on the group. With two mice the single neighbour is turned up (β 2.4 in
+`mouse_social`, AMI 0.46 → 0.51 against its scene phases). With four mice the three neighbours
+together outweigh one animal's pose, so they are turned down (β 0.43) and the social behaviours that
+make up most of that clip's script blur (AMI 0.34 → 0.31). Turn it off when the behaviours of
+interest are mostly contacts in a group.
 
 Earlier versions instead rotated each other animal onto the focal body axis (in front or behind),
 which dropped left and right. An animal beside the focal one then sat on the boundary and flipped
@@ -532,10 +594,12 @@ Going from 1 to 2 states increases the likelihood enormously. Extra states add a
 likelihood but cost more than they gain. Every fit is kept, so clicking another k in the viewer's
 BIC plot switches to it at once.
 
-**Optimize rsLDS.** The button left of Run searches stickiness (0, 0.1, 0.25, 0.5, 1, 2, 4) and
-EM iterations (50, 100) for the most states that are also stable. It never uses a
-known number of states: every setting runs the normal k search above, and each state of the chosen
-fit gets a stability score
+**Optimize rsLDS.** The button left of Run picks settings without being told the number of
+states. With social features and the proximity field on it searches the field, the setting that
+matters most: reach d₀ (0.25, 0.35, 0.5, 0.7, 1) × side reach ρ (0.5, 0.75, 1), with stickiness and
+EM iterations as set (they barely mattered in the settings study). For ego features, or with the
+field off, it searches stickiness (0, 0.1, 0.25, 0.5, 1, 2, 4) × EM iterations (50, 100). Every
+setting runs the normal k search above, and each state of the chosen fit gets a stability score
 
 ```
  s = dwell × reproducibility
@@ -545,26 +609,22 @@ fit gets a stability score
 ```
 
 A state is **stable** when s ≥ 0.5 and it holds at least 0.5% of the frames. Settings are ranked by
-the number of stable states, then their mean s, then fewer iterations and less stickiness. When
-every fit of a setting converged under its iteration cap, higher caps repeat its result and are
-skipped. The winner is written into the sliders and its fit is shown, with a table of the best
-settings; the export records it under `model.hyperparameters.optimized`.
+the **most stable states**, then the **fewest one-frame bouts** (states that last a single frame),
+then the most frames in stable states. The winner is written into the sliders and its fit is shown,
+with a table of the best settings; the export records it under `model.hyperparameters.optimized`.
 
-Checked against the scripted behaviours (which the optimizer never sees):
+Checked against the scripted behaviours (which the optimizer never sees), field search, balance off:
 
-| dataset | search time (headless) | k (BIC) | stable states | NMI of the pick vs best setting | rank vs NMI |
+| dataset | settings | search time (headless) | pick | AMI of the pick | best field |
 |---|---|---|---|---|---|
-| `mouse_social` (2 mice) | 23 s | 7 | 7 | 0.50 vs 0.51 | 0.82 |
-| `mouse_group_blocks` (4 mice, noisy)¹ | 34 min | 12 | 4 | 0.20 vs 0.22 | −0.39 |
+| `mouse_group_blocks` (4 mice) | clean-up on | 14 min | d₀ 0.35, ρ 0.75, k 14 | 0.341 | 0.341 |
+| `mouse_social` (2 mice) | raw | 1.5 min | d₀ 0.7, ρ 0.75, k 8 | 0.534 | 0.562 |
 
-¹ Measured with an earlier, larger grid (stickiness 0–1 in 8 steps × 25–200 iterations, 32
-settings); the current grid has 14.
-
-On the clean two-mouse clip the pick is as good as any setting and the ranking tracks agreement
-with the true phases. On the noisy four-mouse clip every setting flickers (about 1,800 one-frame
-bouts in 7,200 samples) and matches the behaviours poorly, so there is nothing good to choose
-between: the limit there is in the features, not in stickiness, and the search is slow on large
-data. On the two-mouse clip the best stickiness is 0.5; 2 and 4 add nothing.
+Fewest one-frame bouts alone tracks agreement best on the four-mouse clip (rank correlation 0.84
+over the study's runs) and was the study's first recommendation, but on two mice it chose a field
+so small that the other mouse almost vanished and three coarse states remained (AMI 0.17). Ranking by
+stable states first, with one-frame bouts as the tie-breaker, picked the best or a near-best field on
+both.
 
 **Labels and bouts.**
 
@@ -578,9 +638,19 @@ States are renumbered in order of first appearance, so state 1 is whatever happe
 each state the viewer reports its share of time, number of bouts and mean bout length. In the
 toy example the 600 frames split into 11 bouts, with a mean of 54.5 frames.
 
-**Prototypes.** For each state the viewer finds the bouts whose frames lie nearest the state's
-mean in PC space (up to ±1.5 s around the frame). It animates them in the animal's own frame,
-with the other animals in grey for social runs. These are real frames, not reconstructions.
+**Prototypes.** Two views of each state, both played at half speed with poses interpolated
+between frames, in the animal's own frame:
+
+* **Smoothed nearest bout** (default): the real bout whose frames lie nearest the state's mean in PC
+  space (up to ±1.5 s around the frame), each joint smoothed over time (Gaussian, σ 1.5 frames), with
+  the other animals in grey for social runs. Real behaviour, without the frame-to-frame tracking
+  noise (about 13 times smoother on the examples).
+* **Model rollout**: what the model thinks the state is. From the first frame of that bout, the
+  state's flow field z(t+1) = A z(t) + b is run forward without noise for 2 s and the own pose is
+  rebuilt from the PCs. It shows the state's dynamics directly: settling toward its fixed point, a
+  rhythmic cycle, a drift. Only the focal animal is drawn (the reconstruction covers the own pose),
+  and it needs a model fit on PCs. A state whose field is unstable runs out of the range of the real
+  data; its rollout stops there and is marked "leaves data".
 
 ---
 
@@ -591,7 +661,7 @@ with the other animals in grey for social runs. These are real frames, not recon
 | **timeline (CL rows)** | each animal's state per frame, under the playback |
 | **PC1–PC3 plot, scree** | every sample in PC space coloured by state; variance per PC |
 | **flow fields by state** | the fitted field, bouts and fixed point of each state (section 8) |
-| **prototypes** | real example bouts of each state |
+| **prototypes** | each state as a smoothed real bout, or as the rollout of its flow field |
 | **reconstruction ghost** | the skeleton rebuilt from the first q PCs, over or beside the original |
 | **Clusters (.json)** | `etho-clusters` 1.0: labels, bouts, PC scores, model (A, b, Σ, P, fixed points), PCA loadings, feature settings including the proximity kernel ([spec](viewer/CLUSTER_FORMAT.md)) |
 | **Labels (.csv)** | `animal_id, animal, frame, time_s, state` |
@@ -608,14 +678,15 @@ with the other animals in grey for social runs. These are real frames, not recon
 | Nodes | Weights | all on | unticked nodes are dropped from every block |
 | Proximity weighting | Weights (social) | on | multiply each other-animal block by w(d) |
 | Distance | Weights (social, 3D data) | 3D | centroid distance with height (3D) or on the floor (2D); used for w(d) and ordering |
-| d₀ | Weights (social) | 1 body length | reach of the Gaussian field ahead and behind (and in height) |
-| Side reach ρ | Weights (social) | 0.5 | reach to the sides as a fraction of d₀; 1 = isotropic |
-| Others vs own β | Weights (social) | 1 : 1 | multiplies every other-animal block (0.1–10, log scale); own pose stays at 1 |
+| Clean-up | Clean tab | off (Apply) | swaps on, outliers window 7 / threshold 5, body-relative fill, Gaussian σ 1 frame |
+| d₀ | Weights (social) | 0.35 body lengths | reach of the Gaussian field ahead and behind (and in height) |
+| Side reach ρ | Weights (social) | 0.75 | reach to the sides as a fraction of d₀; 1 = isotropic |
+| Balance own/others | Weights (social) | on | other animals scaled by β so that own pose and others are 50/50 in contact; off: β = 1 |
 | Reduction | Clustering | PCA, 95% variance | or None: dynamics on raw features |
 | k from / to | Clustering | 2 / 15 | range searched; lowest BIC wins |
 | Stickiness | Clustering | 0.1 | self-transition pseudo-count, as a fraction of transitions per state (0–4) |
 | EM iterations | Clustering | 80 | maximum per fit (stops earlier on convergence) |
-| Optimize rsLDS | Clustering (button) | – | searches stickiness and EM iterations for the most stable states; sets both sliders |
+| Optimize rsLDS | Clustering (button) | – | searches the proximity field (ego: stickiness and EM iterations) for the most stable states, then fewest one-frame bouts; sets the sliders |
 
 ---
 

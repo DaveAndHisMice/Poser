@@ -13,7 +13,8 @@ means the same behaviour in every dataset it is applied to.
     result.time_budget()                           # pandas tables, see Result
     result.save('new_session_clusters.json')       # etho-clusters 1.0, like the viewer's export
 
-The model is applied, not refit: new data gets the trained states and transition probabilities.
+If the model was trained on data cleaned in the viewer's Clean tab, new data is cleaned the same way
+first (clean_pose; skipped for files that are already cleaned). The model is applied, not refit: new data gets the trained states and transition probabilities.
 Only models fit on PCA scores can be applied (the viewer's default); models fit on raw features do
 not store what is needed.
 
@@ -25,11 +26,12 @@ from __future__ import annotations
 import datetime
 import json
 import math
+import warnings
 from pathlib import Path
 
 import numpy as np
 
-__all__ = ['Model', 'Result', 'load_pose']
+__all__ = ['Model', 'Result', 'load_pose', 'clean_pose']
 __version__ = '1.0'
 
 UNIT_SCALE = {'m': 1.0, 'cm': 0.01, 'mm': 0.001}     # length units the model can be applied across
@@ -54,6 +56,218 @@ def load_pose(src):
     if ds.get('format') != 'etho-pose':
         raise ValueError(f"not an etho-pose dataset (format = {ds.get('format')!r})")
     return ds
+
+
+# ---------- pose clean-up (same steps as viewer/pose_clean.js, the viewer's Clean tab) ----------
+_ANT = ['neck', 'chest', 'spine_mid', 'head', 'snout', 'nose']
+_POST = ['pelvis', 'tail_base', 'hips']
+
+
+def _floor_axes(space):
+    if int(space['dims']) == 2:
+        return 0, 1
+    up = space.get('up', '+Y')[1]
+    return (0, 2) if up == 'Y' else (0, 1) if up == 'Z' else (1, 2)
+
+
+def _axis_joints(names):
+    ant = next((names.index(n) for n in _ANT if n in names), None)
+    post = next((names.index(n) for n in _POST if n in names), None)
+    return (ant, post) if ant is not None and post is not None and ant != post else (None, None)
+
+
+def _fix_swaps(P, names, space):
+    """Swap X_L / X_R back in frames where both sit on the wrong side of the body axis."""
+    ant, post = _axis_joints(names)
+    fixed = {}
+    if ant is None:
+        return fixed
+    ax, az = _floor_axes(space)
+    u = P[:, ant, [ax, az]] - P[:, post, [ax, az]]
+    n = np.hypot(u[:, 0], u[:, 1])
+
+    def lat(j):
+        d = P[:, j, [ax, az]] - P[:, post, [ax, az]]
+        with np.errstate(invalid='ignore', divide='ignore'):
+            return np.where(n > 0, (u[:, 0] * d[:, 1] - u[:, 1] * d[:, 0]) / n, np.nan)
+    for i, nm in enumerate(names):
+        if not nm.endswith('_L') or nm[:-2] + '_R' not in names:
+            continue
+        k = names.index(nm[:-2] + '_R')
+        li, lk = lat(i), lat(k)
+        ok = np.isfinite(li) & np.isfinite(lk)
+        if ok.sum() < 10:
+            continue
+        si, sk = np.sign(np.median(li[ok])), np.sign(np.median(lk[ok]))
+        if not si or si == sk:
+            continue
+        mi, mk = 0.25 * np.median(np.abs(li[ok])), 0.25 * np.median(np.abs(lk[ok]))
+        with np.errstate(invalid='ignore'):
+            bad = (li * si < -mi) & (lk * sk < -mk)
+        if bad.any():
+            P[bad, i], P[bad, k] = P[bad, k].copy(), P[bad, i].copy()
+            fixed[f'{nm}/{names[k]}'] = int(bad.sum())
+    return fixed
+
+
+def _windows(v, h):
+    """frames x (2h+1) windows of a series, NaN beyond the ends."""
+    pad = np.concatenate([np.full(h, np.nan), v, np.full(h, np.nan)])
+    return np.lib.stride_tricks.sliding_window_view(pad, 2 * h + 1)
+
+
+def _remove_outliers(P, window, threshold):
+    nF, J, dims = P.shape
+    h = max(1, window // 2)
+    removed = np.zeros(J, int)
+    for j in range(J):
+        present = np.isfinite(P[:, j, 0])
+        d2, ok = np.zeros(nF), present.copy()
+        for c in range(dims):
+            W = _windows(P[:, j, c], h)
+            cnt = np.isfinite(W).sum(1)
+            ok &= cnt >= 3
+            with warnings.catch_warnings():                    # all-NaN windows: median NaN, masked by ok
+                warnings.simplefilter('ignore', RuntimeWarning)
+                med = np.nanmedian(W, axis=1)
+            d2 += np.where(ok, (P[:, j, c] - med) ** 2, 0)
+        r = np.where(ok, np.sqrt(d2), np.nan)
+        scale = 1.4826 * np.median(r[np.isfinite(r)]) if np.isfinite(r).any() else 0
+        if not scale > 0:
+            continue
+        with np.errstate(invalid='ignore'):
+            bad = r > threshold * scale
+        P[bad, j] = np.nan
+        removed[j] = int(bad.sum())
+    return removed
+
+
+def _fill_series(v, cubic=False):
+    known = np.flatnonzero(np.isfinite(v))
+    if not len(known):
+        return False
+    v[:known[0]] = v[known[0]]
+    v[known[-1] + 1:] = v[known[-1]]
+    for q in range(len(known) - 1):
+        i0, i1 = known[q], known[q + 1]
+        h = i1 - i0
+        if h < 2:
+            continue
+        p0, p1 = v[i0], v[i1]
+        m0 = m1 = (p1 - p0) / h
+        if cubic:
+            if q > 0:
+                m0 = (p1 - v[known[q - 1]]) / (i1 - known[q - 1])
+            if q + 2 < len(known):
+                m1 = (v[known[q + 2]] - p0) / (known[q + 2] - i0)
+        t = (np.arange(i0 + 1, i1) - i0) / h
+        if not cubic:
+            v[i0 + 1:i1] = p0 + (p1 - p0) * t
+        else:
+            t2, t3 = t * t, t * t * t
+            v[i0 + 1:i1] = (2 * t3 - 3 * t2 + 1) * p0 + (t3 - 2 * t2 + t) * h * m0 + (-2 * t3 + 3 * t2) * p1 + (t3 - t2) * h * m1
+    return True
+
+
+def _fill_body(P, names, space):
+    """Fill the body-axis nodes linearly and every other joint via its offset in the body frame."""
+    ant, post = _axis_joints(names)
+    if ant is None:
+        return None
+    nF, J, dims = P.shape
+    ax, az = _floor_axes(space)
+    ups = [c for c in range(dims) if c not in (ax, az)]
+    empty = set()
+    for j in (post, ant):
+        for c in range(dims):
+            if not _fill_series(P[:, j, c]):
+                empty.add(j)
+    if empty:
+        return None
+    ux, uz = P[:, ant, ax] - P[:, post, ax], P[:, ant, az] - P[:, post, az]
+    n = np.hypot(ux, uz)
+    n[n == 0] = 1
+    cs, sn = ux / n, uz / n
+    for j in range(J):
+        if j in (post, ant):
+            continue
+        miss = ~np.isfinite(P[:, j, 0])
+        if not miss.any():
+            continue
+        dx, dz = P[:, j, ax] - P[:, post, ax], P[:, j, az] - P[:, post, az]
+        fw, lat = dx * cs + dz * sn, -dx * sn + dz * cs
+        up = [P[:, j, c] - P[:, post, c] for c in ups]
+        if not _fill_series(fw):
+            empty.add(j)
+            continue
+        _fill_series(lat)
+        for u in up:
+            _fill_series(u)
+        P[miss, j, ax] = P[miss, post, ax] + fw[miss] * cs[miss] - lat[miss] * sn[miss]
+        P[miss, j, az] = P[miss, post, az] + fw[miss] * sn[miss] + lat[miss] * cs[miss]
+        for c, u in zip(ups, up):
+            P[miss, j, c] = P[miss, post, c] + u[miss]
+    return empty
+
+
+def _smooth_series(v, method, size):
+    if method == 'median':
+        W = _windows(v, max(1, int(size) // 2))
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', RuntimeWarning)
+            v[:] = np.nanmedian(W, axis=1)
+        return
+    R = max(1, math.ceil(3 * size))
+    k = np.exp(-0.5 * (np.arange(-R, R + 1) / size) ** 2)
+    v[:] = np.convolve(v, k, 'same') / np.convolve(np.ones_like(v), k, 'same')
+
+
+def clean_pose(pose, settings):
+    """A cleaned copy of an etho-pose dataset (the viewer's Clean tab; see viewer/pose_clean.js).
+
+    settings, as stored in exports under `preprocessing`: {swaps: bool, outliers: {window, threshold}
+    or None, fill: 'linear' | 'cubic' | 'body', smooth: {method: 'gaussian' | 'median', size} or None}.
+    Steps: left/right swap fix, outlier removal (Hampel), gap filling, smoothing.
+    """
+    pose = json.loads(json.dumps(load_pose(pose)))
+    space, dims = pose['space'], int(pose['space']['dims'])
+    out_ = settings.get('outliers')
+    sm = settings.get('smooth')
+    for clip in pose['clips']:
+        nF = int(clip['frame_count'])
+        for an in pose['animals']:
+            tr = clip['tracks'].get(an['id'])
+            if tr is None:
+                continue
+            names = [j['name'] for j in pose['skeletons'][an['skeleton']]['joints']]
+            J = len(names)
+            P = np.full((nF, J, dims), np.nan)
+            for f, fr in enumerate(tr['positions'][:nF]):
+                if fr is None:
+                    continue
+                for j, q in enumerate(fr):
+                    if q is not None:
+                        P[f, j] = q
+            if settings.get('swaps'):
+                _fix_swaps(P, names, space)
+            if out_:
+                _remove_outliers(P, int(out_['window']), float(out_['threshold']))
+            empty = _fill_body(P, names, space) if settings.get('fill') == 'body' else None
+            body = empty is not None
+            empty = empty or set()
+            for j in range(J):
+                if j in empty:
+                    continue
+                for c in range(dims):
+                    v = P[:, j, c]
+                    if not body and not _fill_series(v, settings.get('fill') == 'cubic'):
+                        empty.add(j)
+                        break
+                    if sm and sm.get('method') in ('gaussian', 'median'):
+                        _smooth_series(v, sm['method'], float(sm['size']))
+            tr['positions'] = [[None if j in empty else P[f, j].tolist() for j in range(J)] for f in range(nF)]
+    pose['meta'] = dict(pose.get('meta') or {}, cleaned=settings)
+    return pose
 
 
 def _clip_index(pose, clip):
@@ -209,6 +423,7 @@ class Model:
         self.reduction = spec['reduction']
         self.model = spec['model']
         self.space = spec['space']
+        self.preprocessing = spec.get('preprocessing')       # the Clean tab's settings, or None
         self.states = self.model['states']
         self.k = len(self.states)
         self.state_names = [f"S{s['id']}" for s in self.states]
@@ -288,9 +503,16 @@ class Model:
                 labels[a, T:] = path[-1]                            # the last frame of an open clip
         return labels
 
-    def apply(self, pose, clip=0):
-        """Run the whole pipeline on one clip of an etho-pose dataset: features, PCs, states."""
+    def prepare(self, pose):
+        """The dataset as the model needs it: cleaned like the training data (unless already cleaned)."""
         pose = load_pose(pose)
+        if self.preprocessing and not (pose.get('meta') or {}).get('cleaned'):
+            pose = clean_pose(pose, self.preprocessing)
+        return pose
+
+    def apply(self, pose, clip=0):
+        """Run the whole pipeline on one clip of an etho-pose dataset: clean-up, features, PCs, states."""
+        pose = self.prepare(pose)
         ci = _clip_index(pose, clip)
         animals, X = self.feature_matrix(pose, ci)
         Z = self.embed(X)
@@ -300,7 +522,7 @@ class Model:
 
     def apply_all(self, pose):
         """apply() to every clip of a dataset; a list of Results."""
-        pose = load_pose(pose)
+        pose = self.prepare(pose)
         return [self.apply(pose, i) for i in range(len(pose['clips']))]
 
 
@@ -435,6 +657,7 @@ class Result:
                        'clip': {'index': self.clip_index, 'name': self.clip.get('name'), 'fps': self.fps,
                                 'frame_count': nF, 'loop': bool(self.clip.get('loop'))}},
             'trained_on': spec.get('source'),
+            'preprocessing': spec.get('preprocessing'),
             'space': spec['space'], 'features': spec['features'], 'reduction': spec['reduction'], 'model': model,
             'animals': [{'id': an['id'], 'name': an['name'], 'labels': self.labels[a].tolist(),
                          'bouts': [{kk: b[kk] for kk in ('state', 'start', 'end', 'duration_s')} for b in bl if b['animal'] == a],

@@ -151,6 +151,44 @@ def test_others_scale():
     assert np.allclose(X3[:, d:], 3 * X1[:, d:])
 
 
+CLEAN = {'swaps': True, 'outliers': {'window': 7, 'threshold': 5}, 'fill': 'body', 'smooth': {'method': 'gaussian', 'size': 1}}
+
+
+def test_model_cleans_new_data_like_its_training_data():
+    model = etho.Model(dict(CLUSTERS, preprocessing=CLEAN))
+    cleaned = etho.clean_pose(POSE, CLEAN)
+    assert cleaned['meta']['cleaned'] == CLEAN
+    assert all(q is not None for t in cleaned['clips'][0]['tracks'].values() for fr in t['positions'] for q in fr)
+    r = model.apply(POSE)                              # raw file: cleaned first
+    assert (r.labels == MODEL.apply(cleaned).labels).all()
+    assert (model.apply(cleaned).labels == r.labels).all()   # already cleaned: not cleaned twice
+    assert r.to_clusters()['preprocessing'] == CLEAN
+
+
+def test_clean_up_brings_noisy_group_closer_to_truth():
+    # the four-mouse example is generated deterministically: replay the generator for the noise-free scene
+    root = HERE.parent
+    sys.path.insert(0, str(root))
+    import generate_mouse_group_dataset as G
+    rng = np.random.default_rng(20261109)
+    paths, face_t, face_w, beh, _ = G.choreograph()
+    flat = [G.body(paths[m], G.heading(paths[m], face_t[m], face_w[m]), beh[m], rng) for m in range(4)]
+    lifted = [G.lift(f)[0] for f in flat]
+    lifted[2] = G.lift(flat[2], G.back_bump(lifted[3], G.W(11.2, 12.6, 0.1)))[0]
+    truth = np.stack(lifted)
+    raw = etho.load_pose(root / 'mouse_group_blocks.json')
+    names = [j['name'] for j in raw['skeletons']['mouse']['joints']]
+
+    def errors(pose):
+        _, P = etho._tracks(pose, 0, names, 'm')              # gaps filled linearly, like the viewer
+        P = P[..., [0, 1, 2]]                                  # already Y up
+        pos = np.sqrt((np.linalg.norm(P - truth, axis=-1) ** 2).mean())
+        vel = np.sqrt((np.linalg.norm(np.diff(P, axis=1) - np.diff(truth, axis=1), axis=-1) ** 2).mean())
+        return pos, vel
+    (p0, v0), (p1, v1) = errors(raw), errors(etho.clean_pose(raw, CLEAN))
+    assert p1 < 0.85 * p0 and v1 < 0.6 * v0, (p0, p1, v0, v1)
+
+
 def test_analysis_notebook_runs_on_applied_result():
     # the result file is a normal etho-clusters export: the viewer's analysis notebook reads it
     r = MODEL.apply(POSE)

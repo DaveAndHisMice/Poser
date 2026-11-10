@@ -595,13 +595,19 @@
         ? `elliptical Gaussian field: d0 = ${k.d0_body_lengths} body lengths (${(k.d0 * R.TO_DISPLAY).toFixed(1)} ${LEN}) ahead and behind, ${+(side * k.d0_body_lengths).toFixed(2)} to the sides${k.dims ? `, ${k.dims}D` : ''}`
         : `${k.dims ? `isotropic ${k.dims}D ` : ''}Gaussian on centroid-to-centroid distance, d0 = ${k.d0_body_lengths} body lengths (${(k.d0 * R.TO_DISPLAY).toFixed(1)} ${LEN})`]);
     }
-    if (feat.mode === 'social' && feat.others_scale != null && feat.others_scale !== 1) info.push(['Others vs own', `other animals weighted x${feat.others_scale} relative to the own pose`]);
+    if (feat.mode === 'social' && feat.others_scale != null && feat.others_scale !== 1) info.push(['Others vs own', feat.others_balance ? `balanced 50/50 in contact (others x${feat.others_scale})` : `other animals weighted x${feat.others_scale} relative to the own pose`]);
+    const pp = R.cl.preprocessing;
+    if (pp) info.push(['Pose clean-up', [pp.swaps ? 'L/R swaps' : null, pp.outliers ? `outliers (w ${pp.outliers.window}, t ${pp.outliers.threshold})` : null,
+      `${pp.fill === 'body' ? 'body-relative' : pp.fill} fill`, pp.smooth ? `${pp.smooth.method === 'gaussian' ? 'Gaussian' : 'median'} ${pp.smooth.size} f` : null].filter(Boolean).join(' · ')]);
     info.push(['Reduction', red.method === 'pca' ? `PCA, ${red.n_components} PCs = ${pct(red.cumulative_variance[red.n_components - 1])} of variance` : `none (model on ${red.n_components} raw features)`]);
     info.push(['Model', `switching linear dynamics, k = ${R.model.k} (best by BIC: k = ${R.model.k_auto})`]);
     if (hp.k_min != null) info.push(['k range searched', `${hp.k_min}-${hp.k_max}`]);
     if (hp.stickiness != null) info.push(['Stickiness', String(hp.stickiness)]);
     if (hp.max_em_iterations != null) info.push(['EM iterations (maximum)', String(hp.max_em_iterations)]);
-    if (hp.optimized) info.push(['Chosen by Optimize rsLDS', `${hp.optimized.stable_states} stable states (mean stability ${hp.optimized.stability}), best of ${hp.optimized.settings_tried} settings`]);
+    const opt = hp.optimized;
+    if (opt) info.push(['Chosen by Optimize rsLDS', opt.one_frame_bouts != null
+      ? `${opt.searched === 'proximity field' ? `field reach ${opt.reach_body_lengths}, side ${opt.side_reach}` : `stickiness ${opt.stickiness}, ${opt.iterations} iter.`}: ${opt.one_frame_bouts} one-frame bouts, best of ${opt.settings_tried}`
+      : `${opt.stable_states} stable states (mean stability ${opt.stability}), best of ${opt.settings_tried} settings`]);
     if (R.model.log_likelihood_per_step != null) info.push(['Log-likelihood per step', R.model.log_likelihood_per_step.toFixed(3)]);
     table(g, [{ label: 'Setting', w: 0.42 }, { label: 'Value', w: 0.58 }], info);
 

@@ -148,7 +148,7 @@ button:disabled:hover { border-color: var(--line); }
 .tab { border: 0; background: transparent; font-weight: 600; padding: 6px 12px; }
 .tab:hover { background: var(--track); }
 .tab[aria-expanded="true"] { background: var(--ink); color: var(--bg); }
-#cluster-panel {
+#cluster-panel, #clean-panel {
   position: fixed;
   top: calc(16px + env(safe-area-inset-top, 0px) + 50px);
   left: max(16px, env(safe-area-inset-left, 0px));
@@ -160,7 +160,7 @@ button:disabled:hover { border-color: var(--line); }
 .panel-head { display: flex; align-items: baseline; gap: 10px; }
 .panel-head h2 { margin: 0; font-size: 16px; font-weight: 600; }
 .muted { color: var(--muted); font-size: 12px; }
-#cl-close { padding: 0 8px; font-size: 18px; line-height: 1.4; }
+#cl-close, #cn-close { padding: 0 8px; font-size: 18px; line-height: 1.4; margin-left: auto; }
 .field-row { display: flex; gap: 8px 10px; align-items: center; flex-wrap: wrap; }
 label.small { color: var(--muted); font-size: 12px; }
 select, input[type="number"] {
@@ -258,9 +258,53 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
 <div id="stage" aria-label="3D view of the selected pose dataset. Drag to orbit, scroll to zoom."></div>
 
 <nav id="tabs" class="glass" aria-label="Analysis">
+  <button id="tab-clean" class="tab" type="button" aria-expanded="false" aria-controls="clean-panel">Clean</button>
   <button id="tab-cluster" class="tab" type="button" aria-expanded="false" aria-controls="cluster-panel">Clustering</button>
 </nav>
 
+<section id="clean-panel" class="glass" aria-labelledby="clean-title" hidden>
+  <header class="panel-head">
+    <h2 id="clean-title">Clean</h2>
+    <span id="cn-dataset" class="muted"></span>
+    <button id="cn-close" type="button" aria-label="Close clean-up">×</button>
+  </header>
+  <p class="note">Clean the tracked positions before anything else uses them: the 3D view, kinematics, clustering and every export then work on the cleaned data, and exports record these settings so <code>etho.py</code> cleans new data the same way. Applying clears clustering results.</p>
+  <div class="cl-form">
+    <label class="check" for="cn-swaps"><input type="checkbox" id="cn-swaps" checked> Fix left/right swaps <span id="cn-pairs" class="muted"></span></label>
+    <label class="check" for="cn-outliers"><input type="checkbox" id="cn-outliers" checked> Remove outliers (Hampel filter)</label>
+    <div class="field-row hp">
+      <label class="small" for="cn-window" title="Frames in the rolling median each sample is compared with (centred, odd)">window</label>
+      <input id="cn-window" type="number" min="3" max="31" step="2" value="7">
+      <label class="small" for="cn-thr" title="A sample is removed when its distance from the rolling median exceeds this many robust standard deviations (1.4826 × the median distance for that joint)">threshold</label>
+      <input id="cn-thr" type="number" min="2" max="12" step="0.5" value="5">
+      <span class="muted">× robust scale</span>
+    </div>
+    <div class="field-row">
+      <label class="small" for="cn-fill">Fill gaps</label>
+      <select id="cn-fill">
+        <option value="body" selected>body-relative (follows the animal)</option>
+        <option value="linear">linear</option>
+        <option value="cubic">cubic</option>
+      </select>
+    </div>
+    <div class="field-row">
+      <label class="small" for="cn-smooth">Smoothing</label>
+      <select id="cn-smooth">
+        <option value="gaussian" selected>Gaussian</option>
+        <option value="median">moving median</option>
+        <option value="none">none</option>
+      </select>
+      <label class="small" for="cn-size" id="cn-size-label">σ (frames)</label>
+      <input id="cn-size" type="number" min="0.5" max="15" step="0.5" value="1">
+    </div>
+    <div class="field-row">
+      <button id="cn-reset" type="button">Use raw data</button>
+      <button id="cn-apply" class="primary" type="button">Apply</button>
+    </div>
+    <p id="cn-status" class="note" role="status"></p>
+    <p class="note">Why clean when PCA already discards noise: PCA removes only the noise outside the kept components, and tracking noise is spread across them (on the noisy four-mouse example the kept PCs still hold 75% of it). More importantly, the switching linear dynamics models frame-to-frame steps, where the body's motion is small and white noise is not: there the noise outweighed the movement 1.6 to 1, and cleaning brought it to 0.6 to 1. Swaps and outlier jumps are large single-frame steps that look like state changes.</p>
+  </div>
+</section>
 <section id="cluster-panel" class="glass" aria-labelledby="cluster-title" hidden>
   <header class="panel-head">
     <h2 id="cluster-title">Clustering</h2>
@@ -289,19 +333,16 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
             </div>
             <div class="field-row">
               <label class="small" for="k-d0">d₀</label>
-              <input type="range" id="k-d0" min="0.2" max="4" step="0.05" value="1">
+              <input type="range" id="k-d0" min="0.2" max="4" step="0.05" value="0.35">
               <output id="k-d0-val" for="k-d0" class="mono"></output>
             </div>
             <div class="field-row">
               <label class="small" for="k-side" title="Reach of the field to the sides, as a fraction of its reach ahead and behind. 1 = round (isotropic); below 1 = an ellipse along the body axis, so animals beside the focal one count less.">Side reach</label>
-              <input type="range" id="k-side" min="0.1" max="1" step="0.05" value="0.5">
+              <input type="range" id="k-side" min="0.1" max="1" step="0.05" value="0.75">
               <output id="k-side-val" for="k-side" class="mono"></output>
             </div>
-            <div class="field-row">
-              <label class="small" for="k-others" title="Weight of the other animals' blocks relative to the animal's own pose (applied on top of the proximity field). PCA follows variance, so this sets how much the clustering is about the social scene versus the animal's own posture; the Input variance line below shows the resulting split.">Others vs own</label>
-              <input type="range" id="k-others" min="-1" max="1" step="0.05" value="0" aria-describedby="w-share">
-              <output id="k-others-val" for="k-others" class="mono"></output>
-            </div>
+            <label class="check" for="k-balance" title="Alone, the proximity field already sends the other animals to about 0, so the own pose is nearly all of the features. In contact, the other animals are scaled by one factor β, computed from the data, so that own pose and other animals carry equal variance (each sample weighted by its nearest neighbour's field weight). Off: β = 1.">
+              <input type="checkbox" id="k-balance" checked> Balance own pose and other animals 50/50 in contact <output id="k-balance-val" for="k-balance" class="mono"></output></label>
             <canvas id="k-curve" aria-label="Weight as a function of distance straight ahead or behind, and straight to the side, with the distribution of distances in this clip"></canvas>
             <p id="k-stats" class="note"></p>
           </div>
@@ -336,7 +377,7 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
         <input id="hp-iters" type="number" min="10" max="500" step="10" value="80">
       </div>
       <div class="field-row">
-        <button id="cl-opt" type="button" title="Search stickiness and EM iterations for the most states that are also stable: long bouts, and the same states again when refit from other starting points. Click again to stop.">Optimize rsLDS</button>
+        <button id="cl-opt" type="button" title="Search the proximity field (reach and side reach; for ego features: stickiness and EM iterations) for the fit with the most stable states, then the fewest one-frame bouts. No number of states is assumed. Click again to stop.">Optimize rsLDS</button>
         <button id="cl-run" class="primary" type="button">Run</button>
       </div>
       <div id="opt-box" class="result" hidden>
@@ -384,8 +425,8 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
         <span class="small" style="color: var(--ink); font-weight: 600;">Cluster prototypes</span>
         <label class="small" for="pr-mode">Show</label>
         <select id="pr-mode">
-          <option value="real">nearest bout</option>
-          <option value="overlay">overlay of 5 nearest bouts</option>
+          <option value="smooth">smoothed nearest bout</option>
+          <option value="model">model rollout (the state's flow field)</option>
         </select>
       </div>
       <canvas id="proto-cv" aria-label="Animated typical pose of each cluster, drawn in the animal's own frame. Click a figure to enlarge it and jump to that cluster's most typical bout."></canvas>
@@ -448,6 +489,7 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
 
 <script>/*__POSE_FORMAT__*/</script>
 <script>/*__REPORT__*/</script>
+<script>/*__POSE_CLEAN__*/</script>
 <script type="application/json" id="nb-cells">/*__NOTEBOOK__*/</script>
 <script type="application/json" id="etho-py">/*__ETHO_PY__*/</script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
@@ -673,7 +715,8 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
   const isCentroidKey = (v) => { const a = centroidOf(v); return a >= 0 && a < S.A; };
   const centroidLabel = (a) => (S.A > 1 ? `Centroid · ${S.animals[a].name}` : 'Centroid');
 
-  let dataset = null;   // the loaded etho-pose dataset
+  let dataset = null;   // the etho-pose dataset in use (cleaned when the Clean tab has been applied)
+  let rawDataset = null, cleanInfo = null;   // the file as loaded; { settings, report } of the clean-up in use
   let datasetFile = null;
 
   // ---------- active dataset state ----------
@@ -1517,7 +1560,7 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
   };
   function describeDataset(ds) {
     const nA = ds.animals.length, nV = ds.videos.length;
-    return `${ds.space.dims}D · ${nA} animal${nA === 1 ? '' : 's'} · ${nV ? `${nV} video${nV === 1 ? '' : 's'}` : 'no video'}`;
+    return `${ds.space.dims}D · ${nA} animal${nA === 1 ? '' : 's'} · ${nV ? `${nV} video${nV === 1 ? '' : 's'}` : 'no video'}${cleanInfo ? ' · cleaned' : ''}`;
   }
   function useDataset(ds) {
     // prepare() runs before anything is replaced, so a bad file leaves the current view intact
@@ -1540,7 +1583,10 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
     try {
       const ds = PoseFormat.load(await file.text(), { name: file.name.replace(/\.json$/i, '') });
       datasetFile = file.name;
+      cleanInfo = null;
       useDataset(ds);
+      rawDataset = ds;
+      renderCleanPanel();
       if (S.filled) showError(`${S.filled} missing joint samples were interpolated for display.`);
     } catch (e) {
       showError(`Could not load ${file.name}: ${e.message}`);
@@ -1973,10 +2019,12 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
   // ρ = 1 is the isotropic Gaussian exp(−½ (d/d₀)²); ρ < 1 an ellipse along the body axis, so an
   // animal in front or behind counts more than one beside, smoothly (no snapping). Δheight counts
   // only with 3D distances. Other animals are ordered nearest-first by plain centroid distance
-  // (3D with height, or 2D on the floor). "Others vs own" multiplies every other-animal block by β
-  // (own pose stays at 1, so reconstructions need no un-scaling): the balance PCA sees between the
-  // social scene and the animal's own posture.
-  const weights = { sig: '', on: [], kernelOn: true, d0Body: 1, side: 0.5, others: 1, dims: 3 };
+  // (3D with height, or 2D on the floor). Balance: every other-animal block is then multiplied by one
+  // factor β, chosen so that in contact the own pose and the other animals carry equal variance
+  // (variances weighted by each sample's nearest-neighbour field weight). Alone, the field already
+  // sends the others to ~0, so the own pose dominates; in contact the two are 50/50. The own pose is
+  // never rescaled, so reconstructions need no un-scaling. Balance off: β = 1.
+  const weights = { sig: '', on: [], kernelOn: true, d0Body: 0.35, side: 0.75, balance: true, dims: 3 };   // contact field: best in the four-mouse settings study (README, section 5)
   const distDims = () => (S.dims === 3 ? weights.dims : 2);
   function syncWeights() {
     const sig = S.animals[0].idx.map((i) => S.joints[i].base).join('|');
@@ -1993,7 +2041,7 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
       w: Float64Array.from(weights.on, (on) => (on ? 1 : 0)),
       kernel: social && weights.kernelOn ? { d0: weights.d0Body * bodyLength(), d0Body: weights.d0Body, dims: distDims(), side: weights.side } : null,
       distDims: distDims(),
-      othersScale: social ? weights.others : 1,
+      balance: social && weights.balance,
     };
   }
   function featureCount(cfg) {
@@ -2006,7 +2054,7 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
     const off = [...cfg.w].filter((w) => w === 0).length;
     const parts = [];
     if (off) parts.push(`${off} node${off === 1 ? '' : 's'} removed`);
-    if (cfg.othersScale !== 1) parts.push(`others ×${fmtRatio(cfg.othersScale)}`);
+    if (cfg.balance) parts.push('own/others 50/50 in contact');
     if (cfg.kernel) parts.push(`proximity d₀ ${cfg.kernel.d0Body} body, ${cfg.kernel.side < 1 ? `sides ×${cfg.kernel.side}, ` : ''}${cfg.kernel.dims}D`);
     return parts.join(', ');
   }
@@ -2031,7 +2079,8 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
       if (blk) oth += v; else own += v;
     }
     const tot = own + oth;
-    return { node: Array.from(node, (x) => (tot > 0 ? x / tot : 0)), own: tot > 0 ? own / tot : 0, others: tot > 0 ? oth / tot : 0, kStats: F.kStats };
+    return { node: Array.from(node, (x) => (tot > 0 ? x / tot : 0)), own: tot > 0 ? own / tot : 0, others: tot > 0 ? oth / tot : 0, kStats: F.kStats,
+      othersScale: F.othersScale, contactOwn: F.contactOwnVar };
   }
   const fmtRatio = (b) => (b >= 10 || b < 0.1 ? b.toPrecision(2) : +b.toFixed(b < 1 ? 2 : 1)).toString();
   const pct = (x) => (x >= 0.995 ? '100%' : x < 0.0005 ? '0%' : `${(x * 100).toFixed(x < 0.1 ? 1 : 0)}%`);
@@ -2048,7 +2097,7 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
     $('#k-d0').value = String(weights.d0Body);
     $('#k-d0').disabled = !weights.kernelOn;
     $('#k-side').value = String(weights.side);
-    $('#k-others').value = String(Math.log10(weights.others));
+    $('#k-balance').checked = weights.balance;
     $('#k-side').disabled = !weights.kernelOn;
     $('#k-dims-row').hidden = S.dims !== 3;
     $('#k-dims').value = String(weights.dims);
@@ -2090,9 +2139,10 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
       $(`#w-${j}-on`).checked = on;
     });
     $('#k-d0-val').textContent = `${weights.d0Body.toFixed(2)} body = ${fmtLenShort(weights.d0Body * bodyLength())}`;
-    $('#k-others-val').textContent = `own 1 : others ${fmtRatio(weights.others)}`;
+    $('#k-balance-val').textContent = pv && social && pv.othersScale !== 1 ? `(β = ${fmtRatio(pv.othersScale)})` : '';
     $('#k-side-val').textContent = weights.side >= 1 ? '1 (round)' : `${weights.side.toFixed(2)} × d₀ = ${fmtLenShort(weights.side * weights.d0Body * bodyLength())}`;
-    $('#w-share').textContent = pv && social ? `Input variance: ${pct(pv.own)} own pose · ${pct(pv.others)} other animals` : '';
+    $('#w-share').textContent = pv && social ? `Input variance: ${pct(pv.own)} own pose · ${pct(pv.others)} other animals overall` +
+      (pv.contactOwn != null ? `; in contact ${pct(pv.contactOwn)} · ${pct(1 - pv.contactOwn)}` : '') : '';
     if (social && pv && pv.kStats) {
       $('#k-stats').textContent = cfg.kernel
         ? `Weight > 0.5 (closer than ${fmtLenShort(1.177 * cfg.kernel.d0)}${cfg.kernel.side < 1 ? ` ahead or behind, ${fmtLenShort(1.177 * cfg.kernel.side * cfg.kernel.d0)} to the side` : ` in ${cfg.kernel.dims}D`}) in ${pct(pv.kStats.half)} of animal pairs × frames; mean weight ${pv.kStats.mean.toFixed(2)}.`
@@ -2100,7 +2150,7 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
       drawKernelCurve(cfg, pv.kStats.dist);
     }
     $('#w-note').textContent = social
-      ? "Untick a node to drop it (from every animal). Each other animal is expressed in the focal animal's frame as it is (left and right stay distinct). Proximity: its coordinates are then multiplied by w = exp(−½ [(forward² + Δheight²)/d₀² + lateral²/(ρ·d₀)²]), a Gaussian field centred on the focal animal's centroid and read at the other animal's centroid, in the focal frame, so a distant animal shrinks to \"nobody nearby\". d₀ is the reach ahead and behind, in body lengths (nose-to-tail extent); side reach ρ shrinks it to the sides, so an animal in front of or behind the focal one counts more than one beside it, without any snapping (ρ = 1: the isotropic Gaussian). Height counts only with 3D distance (e.g. one animal on a block above the other). Others vs own then multiplies every other animal's coordinates by β (own pose stays at 1): PCA follows variance, so β sets how much the states are about the social scene versus the animal's own posture (see the input-variance split below). Other animals are ordered nearest-first by centroid distance (3D or 2D). The egocentric frame itself is unchanged."
+      ? "Untick a node to drop it (from every animal). Each other animal is expressed in the focal animal's frame as it is (left and right stay distinct). Proximity: its coordinates are then multiplied by w = exp(−½ [(forward² + Δheight²)/d₀² + lateral²/(ρ·d₀)²]), a Gaussian field centred on the focal animal's centroid and read at the other animal's centroid, in the focal frame, so a distant animal shrinks to \"nobody nearby\". d₀ is the reach ahead and behind, in body lengths (nose-to-tail extent); side reach ρ shrinks it to the sides, so an animal in front of or behind the focal one counts more than one beside it, without any snapping (ρ = 1: the isotropic Gaussian). Height counts only with 3D distance (e.g. one animal on a block above the other). Balance: the other animals are then multiplied by one factor β, computed so that in contact (each sample weighted by its nearest neighbour's field weight) the own pose and the other animals carry equal variance. Alone, the field sends the others to about 0, so the own pose dominates; in contact the two count equally. The own pose is never rescaled. Other animals are ordered nearest-first by centroid distance (3D or 2D). The egocentric frame itself is unchanged."
       : 'Untick a node to drop it from the analysis (for every animal). The egocentric frame itself is still defined by the same body axis.';
     $('#w-summary').textContent = weightNote(cfg) || 'all nodes';
     drawFeatureDiagram(cfg);
@@ -2141,7 +2191,7 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
   $('#k-dims').addEventListener('change', () => { weights.dims = Number($('#k-dims').value); updateWeights(); });
   $('#k-d0').addEventListener('input', () => { weights.d0Body = Number($('#k-d0').value); updateWeights(); });
   $('#k-side').addEventListener('input', () => { weights.side = Number($('#k-side').value); updateWeights(); });
-  $('#k-others').addEventListener('input', () => { weights.others = +(10 ** Number($('#k-others').value)).toPrecision(3); updateWeights(); });
+  $('#k-balance').addEventListener('change', () => { weights.balance = $('#k-balance').checked; updateWeights(); });
 
   // One row per animal per frame: animal 1's frames first, then animal 2's, ... ("blocks").
   function buildFeatures(cfg) {
@@ -2199,8 +2249,30 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
     for (let i = 0; i < n; i++) {
       for (let k = 0; k < D; k++) {
         const blk = Math.floor(k / d);
-        X[i * D + k] *= colScale[k] * (blk ? kw[i * nO + blk - 1] * (cfg.othersScale || 1) : 1);
+        X[i * D + k] *= colScale[k] * (blk ? kw[i * nO + blk - 1] : 1);
       }
+    }
+    // balance: one factor β on every other-animal block so that, weighting each sample by how close its
+    // nearest other animal is (its field weight), own pose and others carry equal variance
+    let othersScale = 1, contactOwnVar = null;
+    if (social) {
+      const q = new Float64Array(n);
+      let Q = 0;
+      for (let i = 0; i < n; i++) { let m = 0; for (let o = 0; o < nO; o++) m = Math.max(m, kw[i * nO + o]); q[i] = m; Q += m; }
+      const wvar = (k) => {
+        let mu = 0; for (let i = 0; i < n; i++) mu += q[i] * X[i * D + k];
+        mu /= Q;
+        let v = 0; for (let i = 0; i < n; i++) v += q[i] * (X[i * D + k] - mu) ** 2;
+        return v / Q;
+      };
+      if (Q > 1e-9) {
+        let vo = 0, vt = 0;
+        for (let k = 0; k < D; k++) { if (k < d) vo += wvar(k); else vt += wvar(k); }
+        if (cfg.balance && vt > 0 && vo > 0) othersScale = Math.sqrt(vo / vt);
+        if (cfg.othersScale) othersScale = cfg.othersScale;      // a fixed β (e.g. from an exported model)
+        contactOwnVar = vo / (vo + vt * othersScale * othersScale);
+      }
+      if (othersScale !== 1) for (let i = 0; i < n; i++) for (let k = d; k < D; k++) X[i * D + k] *= othersScale;
     }
     // share of the input variance carried by the animal's own pose (social: vs the other animals)
     let ownVar = null;
@@ -2229,7 +2301,7 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
     for (let blk = 0; blk < D / d; blk++) for (let j = 0; j < J; j++) for (let a2 = 0; a2 < axes; a2++) {
       names.push(`${blk ? `other${blk}` : 'own'}/${S.joints[S.animals[0].idx[j]].base}/${axisNames[a2]}`);
     }
-    return { X, Xu, n, d: D, nF, blocks: A, poseD: d, zMu: null, zSd: null, colScale, removed, ownVar, kStats, names, cfg };
+    return { X, Xu, n, d: D, nF, blocks: A, poseD: d, zMu: null, zSd: null, colScale, removed, ownVar, kStats, names, cfg, othersScale, contactOwnVar };
   }
 
   // Diagram of what the current feature set uses: a top-down sketch of the focal animal in its own
@@ -2290,7 +2362,7 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
       const field = k ? `<ellipse class="fd-field" cx="${cx}" cy="${cy}" rx="${(1.177 * k.d0Body * BL).toFixed(1)}" ry="${(1.177 * k.side * k.d0Body * BL).toFixed(1)}"/>` : '';
       drawing = field + axesSVG + drawn + animalSVG(cx, cy, 0, 1.0, 'fd-focal') + labels;
       title = 'Social';
-      desc = `own + others' nodes, focal frame${cfg.othersScale !== 1 ? `, others ×${fmtRatio(cfg.othersScale)}` : ''}${cfg.kernel ? `, × w (dashed: w = 0.5${cfg.kernel.side < 1 ? ', elliptical' : ''})` : ''}`;
+      desc = `own + others' nodes, focal frame${cfg.balance ? ', 50/50 in contact' : ''}${cfg.kernel ? `, × w (dashed: w = 0.5${cfg.kernel.side < 1 ? ', elliptical' : ''})` : ''}`;
       count = `${d} own + ${d}${A > 2 ? ` × ${A - 1}` : ''} others = ${d * A} features`;
     }
     const caption = `<text class="fd-strong" x="8" y="122">${title}</text><text x="8" y="137">${desc}</text><text class="fd-mono" x="8" y="152">${count}</text>`;
@@ -2595,6 +2667,7 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
     panel.style.maxHeight = Math.max(180, dockTop - top - 12) + 'px';
   }
   function setPanel(open) {
+    if (open) setCleanPanel(false);
     panel.hidden = !open;
     tabBtn.setAttribute('aria-expanded', String(open));
     if (open) { fitPanel(); renderClusterPanel(); }
@@ -2618,7 +2691,7 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
       const F = egoFeat(0);
       parts.push(`Egocentric frame: centred on each animal's centroid, rotated so its ${pretty(F.post)} → ${pretty(F.ant)} axis points forward.`);
       if (cfg.mode === 'social') parts.push(`Social adds every other animal's ${J} nodes in that frame${S.A > 2 ? ', nearest animal first' : ''}` +
-        (cfg.othersScale !== 1 ? `, weighted ×${fmtRatio(cfg.othersScale)} relative to the animal's own pose` : '') +
+        (cfg.balance ? ', balanced so that in contact they carry as much variance as the own pose' : '') +
         (cfg.kernel ? `, scaled by proximity (${cfg.kernel.side < 1 ? `elliptical Gaussian field, reach d₀ = ${cfg.kernel.d0Body} body lengths ahead and behind and ${+(cfg.kernel.side * cfg.kernel.d0Body).toFixed(2)} to the sides` : `isotropic ${cfg.kernel.dims}D Gaussian on the centroid-to-centroid distance, d₀ = ${cfg.kernel.d0Body} body lengths`}) so distant animals fade out.` : ', at full weight at any distance (proximity weighting off).'));
     }
     parts.push(S.A > 1
@@ -2671,6 +2744,85 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
     renderRecon();
     buildScatter3D();
   }
+
+  // ---------- Clean tab ----------
+  const cleanPanel = $('#clean-panel'), cleanTab = $('#tab-clean');
+  function fitCleanPanel() {
+    if (cleanPanel.hidden) return;
+    const top = cleanPanel.getBoundingClientRect().top, dockTop = $('#dock').getBoundingClientRect().top;
+    cleanPanel.style.maxHeight = Math.max(180, dockTop - top - 12) + 'px';
+  }
+  function setCleanPanel(open) {
+    if (open) { panel.hidden = true; tabBtn.setAttribute('aria-expanded', 'false'); }
+    cleanPanel.hidden = !open;
+    cleanTab.setAttribute('aria-expanded', String(open));
+    if (open) { fitCleanPanel(); renderCleanPanel(); }
+    hideTip();
+  }
+  const cleanOptions = () => ({
+    swaps: $('#cn-swaps').checked, outliers: $('#cn-outliers').checked,
+    window: Math.max(3, Math.round(Number($('#cn-window').value)) | 1), threshold: Math.max(1, Number($('#cn-thr').value) || 5),
+    fill: $('#cn-fill').value, smooth: $('#cn-smooth').value, size: Math.max(0.5, Number($('#cn-size').value) || 1),
+  });
+  function describeClean(info) {
+    const r = info.report, st = info.settings, pairs = Object.entries(r.swaps);
+    const swapped = pairs.reduce((a, [, n]) => a + n, 0);
+    return [
+      st.swaps ? `${swapped} swapped frame${swapped === 1 ? '' : 's'} fixed${pairs.length ? ` (${pairs.map(([p, n]) => `${pretty(p.replace('/', ' ↔ '))} ${n}`).join(', ')})` : ''}` : 'swaps not checked',
+      st.outliers ? `${r.outliers} outlier sample${r.outliers === 1 ? '' : 's'} removed (window ${st.outliers.window}, threshold ${st.outliers.threshold})` : 'no outlier removal',
+      `${pct((r.missing + r.outliers) / Math.max(1, r.samples))} of samples filled (${st.fill === 'body' ? 'body-relative' : st.fill})`,
+      st.smooth ? `${st.smooth.method === 'gaussian' ? `Gaussian smoothing, σ ${st.smooth.size}` : `moving median, ${st.smooth.size} frames`}` : 'no smoothing',
+    ].join(' · ');
+  }
+  function renderCleanPanel() {
+    if (cleanPanel.hidden || !rawDataset) return;
+    $('#cn-dataset').textContent = rawDataset.meta.name;
+    const sk = rawDataset.skeletons[rawDataset.animals[0].skeleton].joints.map((j) => j.name);
+    const pairs = sk.filter((n) => /_L$/.test(n) && sk.includes(n.replace(/_L$/, '_R'))).map((n) => n.replace(/_L$/, ''));
+    $('#cn-pairs').textContent = pairs.length ? `(${pairs.map(pretty).join(', ')})` : '(no _L/_R joint pairs)';
+    $('#cn-size-label').textContent = $('#cn-smooth').value === 'median' ? 'window (frames)' : 'σ (frames)';
+    ['#cn-window', '#cn-thr'].forEach((q) => { $(q).disabled = !$('#cn-outliers').checked; });
+    $('#cn-size').disabled = $('#cn-smooth').value === 'none';
+    $('#cn-reset').disabled = !cleanInfo;
+    if (cleanInfo) $('#cn-status').textContent = `In use: ${describeClean(cleanInfo)}.`;
+    else {
+      let n = 0, miss = 0;
+      rawDataset.clips.forEach((c) => Object.values(c.tracks).forEach((t) => t.positions.forEach((fr) => {
+        const J = fr ? fr.length : 0;
+        n += J; if (fr) fr.forEach((q) => { if (!q) miss++; });
+      })));
+      $('#cn-status').textContent = `In use: the raw data (${pct(miss / Math.max(1, n))} of samples missing, filled linearly for display).`;
+    }
+  }
+  function switchData(ds, info) {
+    const keep = S ? S.clipIndex : 0, prev = dataset, prevInfo = cleanInfo;
+    dataset = ds; cleanInfo = info;
+    try { selectClip(keep); } catch (e) { dataset = prev; cleanInfo = prevInfo; throw e; }
+    $('#ds-info').textContent = describeDataset(dataset);
+  }
+  $('#cn-apply').addEventListener('click', async () => {
+    if (!rawDataset || busy) return;
+    $('#cn-apply').disabled = true;
+    $('#cn-status').textContent = 'Cleaning…';
+    await pause(20);
+    try {
+      const res = PoseClean.clean(rawDataset, cleanOptions());
+      switchData(res.dataset, { settings: res.settings, report: res.report });
+      $('#error').hidden = true;
+    } catch (e) { $('#cn-status').textContent = `Could not clean: ${e.message || e}`; $('#cn-apply').disabled = false; return; }
+    $('#cn-apply').disabled = false;
+    renderCleanPanel();
+  });
+  $('#cn-reset').addEventListener('click', () => {
+    if (!rawDataset || busy) return;
+    try { switchData(rawDataset, null); } catch (e) { showError(e.message); }
+    renderCleanPanel();
+  });
+  ['#cn-swaps', '#cn-outliers', '#cn-smooth'].forEach((q) => $(q).addEventListener('change', () => renderCleanPanel()));
+  cleanTab.addEventListener('click', () => setCleanPanel(cleanPanel.hidden));
+  $('#cn-close').addEventListener('click', () => { setCleanPanel(false); cleanTab.focus(); });
+  cleanPanel.addEventListener('keydown', (e) => { if (e.key === 'Escape') { setCleanPanel(false); cleanTab.focus(); } });
+  window.addEventListener('resize', fitCleanPanel);
 
   // ---------- flow fields by state ----------
   // 1) the whole trajectory through PC1–PC2, every step colored by its state;
@@ -2906,6 +3058,7 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
     const nv = Math.min(P.ratio.length, Math.max(npc, 20));
     return {
       format: 'etho-clusters', version: '1.0', created: new Date().toISOString(), generator: 'Pose Dataset Viewer',
+      preprocessing: cleanInfo ? cleanInfo.settings : null,
       source: { dataset: dataset.meta.name, file: datasetFile, clip: { index: S.clipIndex, name: clip.name, fps: clip.fps, frame_count: nF, loop: !!clip.loop } },
       space: { dims: dataset.space.dims, units: dataset.space.units || 'm' },
       features: {
@@ -2914,7 +3067,8 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
         egocentric_axis: { anterior: E.ant, posterior: E.post },
         proximity_kernel: cfg.kernel ? { type: 'gaussian', d0: r6(cfg.kernel.d0), d0_body_lengths: cfg.kernel.d0Body, lateral_scale: cfg.kernel.side, dims: cfg.kernel.dims, distance: 'centroid to centroid' } : null,
         distance_dims: cfg.distDims,
-        others_scale: cfg.mode === 'social' ? cfg.othersScale : undefined,
+        others_scale: cfg.mode === 'social' ? r6(F.othersScale) : undefined,
+        others_balance: cfg.mode === 'social' && cfg.balance ? 'own pose and others 50/50 in contact (proximity-weighted variance)' : undefined,
         body_length: r6(bodyLength()), feature_names: F.names,
       },
       reduction: {
@@ -3085,12 +3239,18 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
   $('#ex-script').addEventListener('click', () => runExport('script'));
 
   // ---------- cluster prototypes ----------
-  // Real behaviour per cluster, no reconstruction: the bouts nearest the cluster's centre in PC space
-  // (a GMM's component mean; for k-means the mean of the members). A bout is the run of that label
-  // around the chosen frame, at most ±1.5 s. "Nearest bout" plays the most central one; "overlay"
-  // plays the PROTO_N most central distinct bouts on top of each other. Frames are drawn from the
-  // unweighted egocentric features (the proximity kernel never distorts what is shown).
-  const PROTO_N = 5;
+  // Two views of each state, both played at PROTO_SPEED with poses interpolated between frames:
+  //   smoothed nearest bout  the real bout nearest the state's mean in PC space (the run of that label
+  //                          around the most central frame, at most ±1.5 s), each joint smoothed over
+  //                          time (Gaussian, PROTO_SIGMA frames) so tracking noise does not jitter it.
+  //                          Frames come from the unweighted egocentric features (the proximity field
+  //                          never distorts what is shown); other animals in grey.
+  //   model rollout          what the model thinks the state is: from the first frame of that bout,
+  //                          the state's flow field z(t+1) = A z(t) + b is run forward without noise for
+  //                          ROLLOUT_S seconds and the own pose is rebuilt from the PCs (mean + Σ z·loading).
+  //                          Smooth by construction; shows only the focal animal (the reconstruction
+  //                          covers the own pose), and needs a model fit on PCs.
+  const PROTO_N = 1, PROTO_SIGMA = 1.5, PROTO_SPEED = 0.5, ROLLOUT_S = 2;
   let protoFocus = -1, protoGeom = null;
 
   function computeProtos(A) {
@@ -3110,6 +3270,28 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
       return { own: block(0), others };
     };
     const maxSpan = Math.round(1.5 * clip.fps);
+    // the state's flow field run forward from the bout's first frame, own pose rebuilt from the PCs
+    const R = P.recon, d1 = m + 1, steps = Math.round(ROLLOUT_S * clip.fps);
+    // the range of the real data on every PC (10% margin): a rollout that leaves it has run away
+    const lo = new Float64Array(m).fill(Infinity), hi = new Float64Array(m).fill(-Infinity);
+    for (let i = 0; i < n; i++) for (let q = 0; q < m; q++) { lo[q] = Math.min(lo[q], Z(i, q)); hi[q] = Math.max(hi[q], Z(i, q)); }
+    for (let q = 0; q < m; q++) { const pad = 0.1 * (hi[q] - lo[q]); lo[q] -= pad; hi[q] += pad; }
+    const rollout = (c, bout) => {
+      if (P.clusterSpace === 'raw' || !K.flowW || !R || R.R < m) return null;
+      const nc = R.cols.length, W = c * d1 * m, x = new Float64Array(nc), frames = [];
+      let left = false;
+      let z = Array.from({ length: m }, (_, q) => Z(bout.animal * nF + bout.start, q));
+      for (let t = 0; t <= steps; t++) {
+        for (let k = 0; k < nc; k++) { let v = R.mean[k]; for (let q = 0; q < m; q++) v += z[q] * R.L[q * nc + k]; x[k] = v; }
+        frames.push(decode(x));
+        const next = z.map((_, q) => { let y = K.flowW[W + m * m + q]; for (let a = 0; a < m; a++) y += K.flowW[W + a * m + q] * z[a]; return y; });
+        if (!next.every((v, q) => Number.isFinite(v) && v >= lo[q] && v <= hi[q])) { left = true; break; }   // unstable field: stop, hold
+        z = next;
+      }
+      const out = frames.map((f) => ({ own: f.own, others: [] }));
+      out.leftData = left;
+      return out;
+    };
     const protos = [];
     for (let c = 0; c < K.k; c++) {
       const members = [];
@@ -3139,19 +3321,34 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
         for (let f = g0; f <= g1; f++) frames.push(decode(XS, (blk * nF + f) * D));
         bouts.push({ animal: blk, start: g0, end: g1, centre: g, frames });
       }
-      protos.push({ c, n: members.length, bouts, bout: bouts[0], real: bouts[0].frames });
+      const smooth = smoothPoses(bouts[0].frames, PROTO_SIGMA);
+      protos.push({ c, n: members.length, bouts, bout: bouts[0], smooth, rollout: rollout(c, bouts[0]) });
     }
     const boundsOf = (list) => {
       let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
-      list.forEach((pr) => pr.bouts.forEach((bt) => bt.frames.forEach((ps) => [ps.own, ...ps.others].forEach((bl) => bl.forEach((q) => {
+      list.forEach((pr) => [...pr.smooth, ...(pr.rollout || [])].forEach((ps) => [ps.own, ...ps.others].forEach((bl) => bl.forEach((q) => {
         if (!Number.isFinite(q[0])) return;
         const [x, y] = protoProject(q), ys = protoProject([q[0], 0, q[2]])[1];
         x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y, ys); y1 = Math.max(y1, y, ys);
-      })))));
+      }))));
       return { x0, x1, y0, y1 };
     };
     protos.forEach((pr) => { if (pr) pr.bounds = boundsOf([pr]); });
     return (K.protos = { F, dr: P, protos, bounds: boundsOf(protos.filter(Boolean)), social: D > d });
+  }
+
+  // every coordinate of a sequence of poses smoothed over time (Gaussian, truncated at the ends; removed nodes stay NaN)
+  function smoothPoses(frames, sigma) {
+    const n = frames.length, R = Math.max(1, Math.ceil(3 * sigma)), ker = [];
+    for (let dd = -R; dd <= R; dd++) ker.push(Math.exp(-0.5 * (dd / sigma) ** 2));
+    const sm = (get) => Array.from({ length: n }, (_, t) => {
+      let s2 = 0, ws = 0;
+      for (let dd = -R; dd <= R; dd++) { const u = t + dd; if (u >= 0 && u < n) { const v = get(u); if (Number.isFinite(v)) { s2 += ker[dd + R] * v; ws += ker[dd + R]; } } }
+      return ws ? s2 / ws : NaN;
+    });
+    const block = (pick) => pick(frames[0]).map((_, j) => [0, 1, 2].map((c) => sm((u) => pick(frames[u])[j][c])));
+    const own = block((f) => f.own), others = frames[0].others.map((_, b) => block((f) => f.others[b]));
+    return Array.from({ length: n }, (_, t) => ({ own: own.map((q) => [q[0][t], q[1][t], q[2][t]]), others: others.map((bl) => bl.map((q) => [q[0][t], q[1][t], q[2][t]])) }));
   }
 
   // Oblique view of an egocentric pose: forward → right, height → up, lateral as receding depth.
@@ -3167,13 +3364,18 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
     const pr = A.F ? computeProtos(A) : null;
     $('#proto').hidden = !pr;
     if (!pr) { $('#proto-note').textContent = ''; return; }
-    const centre = "the state's mean";
-    $('#proto-note').textContent =
-      `Real frames, no reconstruction: the bouts whose frames lie nearest ${centre} in PC space (each bout is the run of that cluster around the frame, at most ±1.5 s), ` +
-      `drawn in the animal's own frame (facing right${S.dims === 3 ? ', floor shadow underneath' : ', seen from above'}) in the cluster's color` +
-      (pr.social ? ', other animal' + (S.A > 2 ? 's' : '') + ' in grey' : '') + '. ' +
-      ($('#pr-mode').value === 'overlay' ? `Overlay: the ${PROTO_N} most central distinct bouts at once, the nearest drawn strongest. ` : '') +
-      'Label: share of time and mean bout length. Click a figure to enlarge it and jump the main view to its nearest bout (heatmap switches to the cluster).';
+    const canModel = pr.protos.some((p) => p && p.rollout);
+    $('#pr-mode').querySelector('option[value="model"]').disabled = !canModel;
+    if (!canModel && $('#pr-mode').value === 'model') $('#pr-mode').value = 'smooth';
+    const where = `drawn in the animal's own frame (facing right${S.dims === 3 ? ', floor shadow underneath' : ', seen from above'}) in the cluster's color`;
+    $('#proto-note').textContent = ($('#pr-mode').value === 'model'
+      ? `Model rollout: from the first frame of the state's most typical bout, its flow field z(t+1) = A z(t) + b is run forward without noise for ${ROLLOUT_S} s ` +
+        `and the own pose is rebuilt from the ${A.dr.clusterDims} PCs, ${where}. This is the movement the model attributes to the state: settling toward its fixed point, a rhythmic cycle, a drift. ` +
+        `Only the focal animal is shown (the reconstruction covers the own pose). "leaves data": the state's field is unstable and the rollout left the range of the real data, so it stops there and holds.`
+      : `Smoothed nearest bout: the real bout nearest the state's mean in PC space (the run of that cluster around the frame, at most ±1.5 s), each joint smoothed over time (σ ${PROTO_SIGMA} frames), ` +
+        `${where}${pr.social ? ', other animal' + (S.A > 2 ? 's' : '') + ' in grey' : ''}.`) +
+      (canModel ? '' : ' Model rollout needs a model fit on PCs.') +
+      ` Both play at ${PROTO_SPEED}× speed. Label: share of time and mean bout length. Click a figure to enlarge it and jump the main view to its nearest bout (heatmap switches to the cluster).`;
   }
   $('#pr-mode').addEventListener('change', () => { if (S && S.analysis && S.analysis.km) renderProtoControls(); });
 
@@ -3208,7 +3410,7 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
     const A = S && S.analysis;
     if (!A || !A.km || !A.F || $('#cl-results').hidden || $('#proto').hidden) return;
     const pr = computeProtos(A), list = pr.protos.filter(Boolean);
-    const mode = $('#pr-mode').value === 'overlay' ? 'overlay' : 'real';
+    const mode = $('#pr-mode').value === 'model' ? 'model' : 'smooth';
     if (!list.length) return;
     const cv = $('#proto-cv');
     const focus = protoFocus >= 0 ? list.find((x) => x.c === protoFocus) : null;
@@ -3233,26 +3435,19 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
       const B = pr.social ? p.bounds : pr.bounds, sc = pr.social ? fit(B) : sharedSc;
       const ox = cx0 + cw / 2 - ((B.x0 + B.x1) / 2) * sc, oy = cy0 + LAB + (ch - LAB - BAR) / 2 - ((B.y0 + B.y1) / 2) * sc;
       const map = ([x, y]) => [ox + x * sc, oy + y * sc];
-      let pose;
-      const clipOf = (frames) => {     // play at the clip's rate, brief hold on the last frame before looping
-        const hold = Math.round(clip.fps * 0.4), len = frames.length + hold;
-        return frames[Math.min(Math.floor(sec * clip.fps) % len, frames.length - 1)];
+      // play at PROTO_SPEED, poses interpolated between frames, a brief hold on the last before looping
+      const clipOf = (frames) => {
+        const hold = clip.fps * 0.4, len = frames.length + hold, tf = (sec * clip.fps * PROTO_SPEED) % len;
+        const f0 = Math.floor(tf);
+        return f0 >= frames.length - 1 ? frames[frames.length - 1] : lerpPose(frames[f0], frames[f0 + 1], tf - f0);
       };
       const color = CL_COLORS[p.c % CL_COLORS.length];
-      if (mode === 'overlay') {
-        // every bout on one clock (shorter bouts hold their last frame), farthest first so the nearest is on top
-        const len = Math.max(...p.bouts.map((b) => b.frames.length)), hold = Math.round(clip.fps * 0.4);
-        const f = Math.floor(sec * clip.fps) % (len + hold);
-        p.bouts.slice().reverse().forEach((b, ri) => {
-          const k = p.bouts.length - 1 - ri;
-          drawSkeletonProto(ctx, b.frames[Math.min(f, b.frames.length - 1)], map, color, shadow && k === 0, k === 0 ? 1 : 0.32, k === 0);
-        });
-        pose = null;
-      } else pose = clipOf(p.real);
+      const model = mode === 'model' && p.rollout;
+      const pose = clipOf(model ? p.rollout : p.smooth);
       if (!focus && i % cols) { ctx.fillStyle = cssVar('--line'); ctx.fillRect(Math.round(cx0), cy0 + 6, 1, ch - 12); }
       if (!focus && i >= cols) { ctx.fillStyle = cssVar('--line'); ctx.fillRect(cx0 + 6, Math.round(cy0), cw - 12, 1); }
       // floor reference line through the origin (3D) / origin cross (2D)
-      if (pose) drawSkeletonProto(ctx, pose, map, color, shadow);
+      drawSkeletonProto(ctx, pose, map, color, shadow, 1, !model);
       // label: marker + number + share of time
       ctx.save();
       ctx.translate(cx0 + 6, cy0 + 4);
@@ -3268,7 +3463,7 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
       ctx.save();
       ctx.beginPath(); ctx.rect(cx0, cy0, cw - 4, LAB + 2); ctx.clip();   // keep the label inside its cell
       ctx.font = `500 10px ${cssVar('--mono')}`;
-      ctx.fillText(`${(st.share * 100).toFixed(0)}% ${st.meanBout.toFixed(2)}s`, cx0 + 18 + ctx.measureText(String(p.c + 1)).width + 7, cy0 + 10);
+      ctx.fillText(`${(st.share * 100).toFixed(0)}% ${st.meanBout.toFixed(2)}s${model && p.rollout.leftData ? ' · leaves data' : ''}`, cx0 + 18 + ctx.measureText(String(p.c + 1)).width + 7, cy0 + 10);
       ctx.restore();
       if (focus) {
         ctx.textAlign = 'right';
@@ -3728,18 +3923,30 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
     return best;
   }
 
-  // ---------- Optimize rsLDS: stickiness and EM iterations ----------
-  // Unsupervised: no number of states is given. Every setting runs the normal k search (lowest BIC),
-  // then each state of the chosen fit gets a stability s = dwell × reproducibility:
-  //   dwell           share of the state's frames in bouts of at least OPT_MIN_BOUT_S (≥ 2 frames)
-  //   reproducibility mean, over refits of the same k from other random starts, of the best Jaccard
-  //                   overlap between this state's frames and any state of the refit
-  // A state is stable when s ≥ OPT_STABLE and it holds at least OPT_MIN_SHARE of the frames. Settings are
-  // ranked by the number of stable states, then their mean s, then fewer iterations and less stickiness.
-  // EM usually converges within 50 iterations, so two caps suffice; stickiness reaches 4 because the
-  // best settings sat at the old top of 1.
+  // ---------- Optimize rsLDS ----------
+  // Unsupervised: no number of states is given, and every setting runs the normal k search (lowest BIC).
+  // What is searched:
+  //   social features with the proximity field on: the field's reach d₀ × side reach ρ (OPT_D0 × OPT_SIDE),
+  //     with stickiness and EM iterations as set (in the settings study they barely mattered);
+  //   otherwise (ego features, or the field off): stickiness × EM iterations.
+  // Ranking (label-free): the most stable states (stateStability below: a state is stable when
+  // dwell × reproducibility ≥ OPT_STABLE and it holds at least OPT_MIN_SHARE of the frames), then the
+  // fewest one-frame bouts (states lasting a single frame, summed over animals), then the most frames in
+  // stable states. Fewest one-frame bouts alone tracked agreement with the scripted behaviours best on
+  // the four-mouse example (settings study, README section 5) but, on two mice, rewarded a field so
+  // small that a few coarse states remained; stable states first picked the best or a near-best field
+  // on both.
+  const OPT_D0 = [0.25, 0.35, 0.5, 0.7, 1], OPT_SIDE = [0.5, 0.75, 1];
   const OPT_STICKY = [0, 0.1, 0.25, 0.5, 1, 2, 4], OPT_ITERS = [50, 100], OPT_SEEDS = [1, 2];
   const OPT_MIN_BOUT_S = 0.1, OPT_STABLE = 0.5, OPT_MIN_SHARE = 0.005;
+  function oneFrameBouts(labels, nF) {
+    let n = 0;
+    for (let i = 0; i < labels.length; i++) {
+      const first = i % nF === 0, last = (i + 1) % nF === 0 || i + 1 === labels.length;
+      if ((first || labels[i - 1] !== labels[i]) && (last || labels[i + 1] !== labels[i])) n++;
+    }
+    return n;
+  }
   function stateStability(dr, km, restarts, fps) {
     const lab = km.labels, n = lab.length, k = km.k, nF = dr.nF || n, minRun = Math.max(2, Math.round(OPT_MIN_BOUT_S * fps));
     const count = new Float64Array(k), long = new Float64Array(k);
@@ -3768,39 +3975,47 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
     return { states, nStable: st.length, stability: st.length ? st.reduce((a, x) => a + x.s, 0) / st.length : 0,
       coverage: st.reduce((a, x) => a + x.share, 0) };
   }
-  const optBetter = (a, b) => (a.nStable !== b.nStable ? a.nStable > b.nStable
-    : Math.abs(a.stability - b.stability) > 1e-9 ? a.stability > b.stability
-      : a.iters !== b.iters ? a.iters < b.iters : a.sticky < b.sticky);
-  async function optimizeRsLDS(dr, st, progress, cancelled) {
-    const rows = [], total = OPT_STICKY.length * OPT_ITERS.length;
-    let best = null, done = 0;
-    for (const sticky of OPT_STICKY) {
-      let prev = null;
-      for (const iters of OPT_ITERS) {
-        if (cancelled()) return { best, rows, stopped: true };
-        done++;
-        // every fit converged below the previous cap: a higher cap gives the same result
-        if (prev && prev.km.fits.every((f) => f.converged && f.iters < prev.iters)) {
-          const row = { ...prev, iters, same: prev.iters };
-          rows.push(row);
-          if (optBetter(row, best)) best = row;
-          continue;
-        }
-        const km = await selectK(dr, { ...st, sticky, iters }, (k, top) => progress(done, total, sticky, iters, `k ${k}/${top}`));
-        const restarts = [];
-        for (const seed of OPT_SEEDS) {
-          if (cancelled()) return { best, rows, stopped: true };
-          progress(done, total, sticky, iters, `refit ${restarts.length + 1}/${OPT_SEEDS.length}`);
-          await pause();
-          restarts.push(cluster(dr, { ...st, sticky, iters, k: km.k, seed }));
-        }
-        const row = { sticky, iters, k: km.k, km, ...stateStability(dr, km, restarts, clip.fps) };
-        rows.push(row);
-        if (!best || optBetter(row, best)) best = row;
-        prev = row;
+  const optBetter = (a, b) => (a.nStable !== b.nStable ? a.nStable > b.nStable : a.oneFrame !== b.oneFrame ? a.oneFrame < b.oneFrame
+    : Math.abs(a.coverage - b.coverage) > 1e-9 ? a.coverage > b.coverage : a.order < b.order);
+  // cfg: the feature settings in use; st: the rest (stickiness, EM iterations, k range, reduction).
+  async function optimizeRsLDS(cfg, st, progress, cancelled) {
+    const field = cfg.mode === 'social' && !!cfg.kernel;
+    const cands = field
+      ? OPT_D0.flatMap((d0Body) => OPT_SIDE.map((side) => ({ d0Body, side })))
+      : OPT_STICKY.flatMap((sticky) => OPT_ITERS.map((iters) => ({ sticky, iters })));
+    const rows = [];
+    let best = null, shared = null;
+    for (let i = 0; i < cands.length; i++) {
+      if (cancelled()) return { best, rows, field, total: cands.length, stopped: true };
+      const c = cands[i], label = field ? `reach ${c.d0Body}, side ${c.side}` : `stickiness ${c.sticky}, ${c.iters} iter.`;
+      progress(i + 1, cands.length, label, 'features');
+      await pause();
+      let F, dr, cfgC = cfg;
+      if (field) {
+        cfgC = { ...cfg, kernel: { ...cfg.kernel, d0Body: c.d0Body, d0: c.d0Body * bodyLength(), side: c.side } };
+        F = buildFeatures(cfgC); dr = reduce(F, st.W, st);
+      } else {
+        if (!shared) { const F0 = buildFeatures(cfg); shared = { F: F0, dr: reduce(F0, st.W, st) }; }
+        ({ F, dr } = shared);
+      }
+      const stC = field ? st : { ...st, sticky: c.sticky, iters: c.iters };
+      const km = await selectK(dr, stC, (k, top) => progress(i + 1, cands.length, label, `k ${k}/${top}`));
+      const restarts = [];
+      for (const seed of OPT_SEEDS) {
+        if (cancelled()) return { best, rows, field, total: cands.length, stopped: true };
+        progress(i + 1, cands.length, label, `refit ${restarts.length + 1}/${OPT_SEEDS.length}`);
+        await pause();
+        restarts.push(cluster(dr, { ...stC, k: km.k, seed }));
+      }
+      const row = { ...c, order: i, k: km.k, oneFrame: oneFrameBouts(km.labels, dr.nF || km.labels.length), ...stateStability(dr, km, restarts, clip.fps) };
+      rows.push(row);
+      if (!best || optBetter(row, best)) {
+        if (best) { delete best.km; delete best.F; delete best.dr; }      // keep the data of the best fit only
+        Object.assign(row, { km, F, dr, cfg: cfgC });
+        best = row;
       }
     }
-    return { best, rows, stopped: false };
+    return { best, rows, field, total: cands.length, stopped: false };
   }
 
   let busy = false;
@@ -3832,18 +4047,19 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
 
   let optRunning = false, optStop = false;
   function renderOptTable(res) {
-    const rows = res.rows.slice().sort((a, b) => (optBetter(a, b) ? -1 : 1));
-    const fmt = (v) => v.toFixed(2);
-    $('#opt-table').innerHTML = '<thead><tr><th>stickiness</th><th>EM iter.</th><th class="num">k (BIC)</th><th class="num">stable</th><th class="num">stability</th><th class="num">coverage</th></tr></thead><tbody>' +
-      rows.slice(0, 8).map((r) => `<tr${r === res.best ? ' class="best"' : ''}><td class="num">${fmt(r.sticky)}</td><td class="num">${r.iters}${r.same ? ' =' : ''}</td><td class="num">${r.k}</td>` +
-        `<td class="num">${r.nStable}</td><td class="num">${fmt(r.stability)}</td><td class="num">${pct(r.coverage)}</td></tr>`).join('') + '</tbody>';
-    const b = res.best;
-    $('#opt-note').textContent = (res.stopped ? `Stopped after ${res.rows.length} of ${OPT_STICKY.length * OPT_ITERS.length} settings. ` : `${res.rows.length} settings tried. `) +
-      `Best: stickiness ${fmt(b.sticky)}, ${b.iters} EM iterations: BIC picks k = ${b.k}, of which ${b.nStable} state${b.nStable === 1 ? ' is' : 's are'} stable ` +
-      `(mean stability ${fmt(b.stability)}, ${pct(b.coverage)} of frames). The sliders are set to it and its fit is shown below. ` +
-      `Stability of a state = share of its frames in bouts of at least ${OPT_MIN_BOUT_S} s × how well it reappears when refit from ${OPT_SEEDS.length} other random starts (best overlap of its frames, Jaccard); ` +
-      `stable means ≥ ${OPT_STABLE} and at least ${OPT_MIN_SHARE * 100}% of the frames. Ranked by the number of stable states, then their stability. No number of states is assumed. ` +
-      '"=" marks a setting whose fits had all converged under fewer iterations, so it repeats that result. Top 8 shown.';
+    const rows = res.rows.slice().sort((a, b) => (optBetter(a, b) ? -1 : 1)), b = res.best;
+    const fmt = (v) => (+v).toFixed(2);
+    const head = res.field ? '<th class="num">reach d₀</th><th class="num">side ρ</th>' : '<th class="num">stickiness</th><th class="num">EM iter.</th>';
+    const keys = (r) => (res.field ? `<td class="num">${fmt(r.d0Body)}</td><td class="num">${fmt(r.side)}</td>` : `<td class="num">${fmt(r.sticky)}</td><td class="num">${r.iters}</td>`);
+    $('#opt-table').innerHTML = `<thead><tr>${head}<th class="num">k (BIC)</th><th class="num">stable states</th><th class="num">1-frame bouts</th><th class="num">stable frames</th></tr></thead><tbody>` +
+      rows.slice(0, 8).map((r) => `<tr${r === b ? ' class="best"' : ''}>${keys(r)}<td class="num">${r.k}</td><td class="num">${r.nStable}</td><td class="num">${r.oneFrame}</td><td class="num">${pct(r.coverage)}</td></tr>`).join('') + '</tbody>';
+    $('#opt-note').textContent = (res.stopped ? `Stopped after ${res.rows.length} of ${res.total} settings. ` : `${res.rows.length} settings tried. `) +
+      (res.field ? `Best: proximity field reach ${fmt(b.d0Body)} body lengths, side reach ${fmt(b.side)} (stickiness and EM iterations as set); the Weights sliders are set to it. `
+        : `Best: stickiness ${fmt(b.sticky)}, ${b.iters} EM iterations; the sliders are set to it. `) +
+      `BIC picks k = ${b.k}, of which ${b.nStable} state${b.nStable === 1 ? ' is' : 's are'} stable, with ${b.oneFrame} one-frame bout${b.oneFrame === 1 ? '' : 's'} and ${pct(b.coverage)} of frames in stable states; its fit is shown below. ` +
+      `Ranked by the most stable states (bouts of at least ${OPT_MIN_BOUT_S} s that reappear when refit from ${OPT_SEEDS.length} other random starts), ` +
+      'then the fewest one-frame bouts (states that last a single frame), then the most frames in stable states. No number of states is assumed. ' +
+      (res.field ? 'With social features the field is searched, as it is what moves the result most; stickiness and EM iterations barely matter. ' : '') + 'Top 8 shown.';
     $('#opt-box').hidden = false;
   }
   $('#cl-opt').addEventListener('click', async () => {
@@ -3856,22 +4072,21 @@ details.weights summary .muted { font-weight: 400; margin-left: 6px; }
     $('#cl-opt').classList.add('primary');
     await pause(30);
     try {
-      const F = buildFeatures(st.cfg);
-      const dr = reduce(F, st.W, st);
-      dr.featDesc = describeFeatures(st.cfg);
-      dr.ownVar = F.ownVar;
-      const res = await optimizeRsLDS(dr, st, (i, n, sticky, iters, what) => {
-        if (!optStop) $('#cl-opt').textContent = `Stop · ${i}/${n}: stickiness ${sticky}, ${iters} iter., ${what}`;
+      const res = await optimizeRsLDS(st.cfg, st, (i, n, label, what) => {
+        if (!optStop) $('#cl-opt').textContent = `Stop · ${i}/${n}: ${label}, ${what}`;
       }, () => optStop);
-      if (res.best) {
-        const km = res.best.km;
-        km.hp.optimized = { criterion: 'most stable states', stickiness: res.best.sticky, iterations: res.best.iters,
-          stable_states: res.best.nStable, stability: +res.best.stability.toFixed(4), settings_tried: res.rows.length };
-        $('#hp-sticky').value = String(res.best.sticky);
-        $('#hp-iters').value = String(res.best.iters);
-        updateKRule();
+      const b = res.best;
+      if (b) {
+        const km = b.km;
+        km.hp.optimized = { criterion: 'most stable states, then fewest one-frame bouts, then most frames in stable states', searched: res.field ? 'proximity field' : 'stickiness and EM iterations',
+          ...(res.field ? { reach_body_lengths: b.d0Body, side_reach: b.side } : { stickiness: b.sticky, iterations: b.iters }),
+          one_frame_bouts: b.oneFrame, stable_frames: +b.coverage.toFixed(4), stable_states: b.nStable, settings_tried: res.rows.length };
+        if (res.field) { weights.d0Body = b.d0Body; weights.side = b.side; }
+        else { $('#hp-sticky').value = String(b.sticky); $('#hp-iters').value = String(b.iters); updateKRule(); }
+        b.dr.featDesc = describeFeatures(b.cfg);
+        b.dr.ownVar = b.F.ownVar;
         km.optRes = res;               // the table is shown while this fit is
-        D.analysis = { dr, km, F };
+        D.analysis = { dr: b.dr, km, F: b.F };
       }
     } catch (err) { showErr(err); }
     busy = optRunning = false;
